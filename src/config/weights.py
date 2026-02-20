@@ -13,31 +13,36 @@ class RecommendationWeights(BaseModel):
     """Weights for each scoring component."""
 
     # Preference matching (stated preferences)
-    preference_category: float = 0.15
-    preference_color: float = 0.10
-    preference_fabric: float = 0.05
-    preference_style: float = 0.10
-    preference_brand: float = 0.10
+    preference_category: float = 0.12
+    preference_color: float = 0.08
+    preference_fabric: float = 0.04
+    preference_style: float = 0.08
+    preference_brand: float = 0.08
 
-    # Behavioral signals (what they've actually done)
-    purchase_history_category: float = 0.10
-    purchase_history_brand: float = 0.08
-    purchase_history_color: float = 0.05
+    # Purchase history signals (what they've bought)
+    purchase_history_category: float = 0.08
+    purchase_history_brand: float = 0.06
+    purchase_history_color: float = 0.04
 
     # Wishlist signals (what they want)
-    wishlist_similarity: float = 0.12
+    wishlist_similarity: float = 0.10
+
+    # Browsing behavior signals (from website activity)
+    browsing_viewed_category: float = 0.06  # Categories they've browsed
+    browsing_viewed_brand: float = 0.04     # Brands they've looked at
+    browsing_cart_similarity: float = 0.12  # Added to cart = high intent!
 
     # Product performance
-    product_popularity: float = 0.05
+    product_popularity: float = 0.04
 
     # Recency/novelty
-    new_arrival_boost: float = 0.05
+    new_arrival_boost: float = 0.04
 
     # Availability
     in_stock_requirement: bool = True  # Filter, not a weight
 
     # Size availability
-    size_match_boost: float = 0.05
+    size_match_boost: float = 0.02
 
     @field_validator('*', mode='before')
     @classmethod
@@ -60,6 +65,9 @@ class RecommendationWeights(BaseModel):
             self.purchase_history_brand +
             self.purchase_history_color +
             self.wishlist_similarity +
+            self.browsing_viewed_category +
+            self.browsing_viewed_brand +
+            self.browsing_cart_similarity +
             self.product_popularity +
             self.new_arrival_boost +
             self.size_match_boost
@@ -71,47 +79,57 @@ DEFAULT_WEIGHTS = RecommendationWeights()
 
 # Alternative presets for different scenarios
 PREFERENCE_HEAVY_WEIGHTS = RecommendationWeights(
-    preference_category=0.20,
-    preference_color=0.15,
-    preference_fabric=0.10,
-    preference_style=0.15,
-    preference_brand=0.15,
+    preference_category=0.18,
+    preference_color=0.12,
+    preference_fabric=0.08,
+    preference_style=0.12,
+    preference_brand=0.12,
     purchase_history_category=0.05,
-    purchase_history_brand=0.05,
-    purchase_history_color=0.03,
-    wishlist_similarity=0.07,
-    product_popularity=0.02,
+    purchase_history_brand=0.04,
+    purchase_history_color=0.02,
+    wishlist_similarity=0.06,
+    browsing_viewed_category=0.04,
+    browsing_viewed_brand=0.03,
+    browsing_cart_similarity=0.06,
+    product_popularity=0.03,
+    new_arrival_boost=0.03,
+    size_match_boost=0.02,
+)
+
+BEHAVIOR_HEAVY_WEIGHTS = RecommendationWeights(
+    # Prioritizes actual behavior over stated preferences
+    preference_category=0.06,
+    preference_color=0.04,
+    preference_fabric=0.02,
+    preference_style=0.04,
+    preference_brand=0.04,
+    purchase_history_category=0.12,
+    purchase_history_brand=0.10,
+    purchase_history_color=0.06,
+    wishlist_similarity=0.14,
+    browsing_viewed_category=0.10,
+    browsing_viewed_brand=0.08,
+    browsing_cart_similarity=0.14,  # Cart is strongest signal
+    product_popularity=0.03,
     new_arrival_boost=0.02,
     size_match_boost=0.01,
 )
 
-BEHAVIOR_HEAVY_WEIGHTS = RecommendationWeights(
-    preference_category=0.08,
-    preference_color=0.05,
-    preference_fabric=0.03,
-    preference_style=0.05,
-    preference_brand=0.05,
-    purchase_history_category=0.18,
-    purchase_history_brand=0.15,
-    purchase_history_color=0.10,
-    wishlist_similarity=0.20,
-    product_popularity=0.05,
-    new_arrival_boost=0.03,
-    size_match_boost=0.03,
-)
-
 NEW_CUSTOMER_WEIGHTS = RecommendationWeights(
-    # For customers with little history, lean on popularity and trends
-    preference_category=0.20,
-    preference_color=0.10,
-    preference_fabric=0.05,
-    preference_style=0.10,
-    preference_brand=0.10,
+    # For customers with little history, lean on popularity and any browsing data
+    preference_category=0.15,
+    preference_color=0.08,
+    preference_fabric=0.04,
+    preference_style=0.08,
+    preference_brand=0.08,
     purchase_history_category=0.02,
     purchase_history_brand=0.02,
     purchase_history_color=0.01,
-    wishlist_similarity=0.05,
-    product_popularity=0.25,
-    new_arrival_boost=0.07,
+    wishlist_similarity=0.04,
+    browsing_viewed_category=0.08,  # Browsing data more useful for new customers
+    browsing_viewed_brand=0.06,
+    browsing_cart_similarity=0.10,
+    product_popularity=0.15,
+    new_arrival_boost=0.06,
     size_match_boost=0.03,
 )

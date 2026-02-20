@@ -202,3 +202,143 @@ class RecommendationEngine:
             return reasons[0]
 
         return f"{reasons[0]}. Also: {', '.join(reasons[1:3]).lower()}"
+
+    def find_alternatives(
+        self,
+        sold_out_product: Product,
+        products: list[Product],
+        n: int = 3,
+    ) -> list[ScoredProduct]:
+        """
+        Find in-stock alternatives for a sold-out wishlist item.
+
+        Scores products based on similarity to the sold-out product:
+        - Same category (strong signal)
+        - Same brand (strong signal)
+        - Same style
+        - Similar color
+        - Similar price range
+        - Similar fabric
+
+        Args:
+            sold_out_product: The product that is out of stock
+            products: Candidate product catalog
+            n: Number of alternatives to return
+
+        Returns:
+            List of ScoredProduct alternatives
+        """
+        alternatives: list[tuple[float, Product, list[str]]] = []
+        source_attrs = sold_out_product.attributes
+
+        for product in products:
+            # Must be in stock
+            if not product.is_in_stock:
+                continue
+
+            # Must be same retailer
+            if product.retailer_id != sold_out_product.retailer_id:
+                continue
+
+            # Skip the same product
+            if product.product_id == sold_out_product.product_id:
+                continue
+
+            score = 0.0
+            reasons = []
+            attrs = product.attributes
+
+            # Category match (most important)
+            if (source_attrs.category and attrs.category and
+                source_attrs.category.lower() == attrs.category.lower()):
+                score += 0.30
+                reasons.append(f"Same category: {attrs.category}")
+
+            # Brand match
+            if (source_attrs.brand and attrs.brand and
+                source_attrs.brand.lower() == attrs.brand.lower()):
+                score += 0.25
+                reasons.append(f"Same brand: {attrs.brand}")
+
+            # Style match
+            if (source_attrs.style and attrs.style and
+                source_attrs.style.lower() == attrs.style.lower()):
+                score += 0.15
+                reasons.append(f"Same style: {attrs.style}")
+
+            # Color match
+            source_colors = set(c.lower() for c in (source_attrs.colors or [source_attrs.color] if source_attrs.color else []))
+            product_colors = set(c.lower() for c in (attrs.colors or [attrs.color] if attrs.color else []))
+            if source_colors & product_colors:
+                score += 0.10
+                matched_color = list(source_colors & product_colors)[0].title()
+                reasons.append(f"Same color: {matched_color}")
+
+            # Fabric match
+            source_fabrics = set(f.lower() for f in (source_attrs.fabrics or [source_attrs.fabric] if source_attrs.fabric else []))
+            product_fabrics = set(f.lower() for f in (attrs.fabrics or [attrs.fabric] if attrs.fabric else []))
+            if source_fabrics & product_fabrics:
+                score += 0.10
+                matched_fabric = list(source_fabrics & product_fabrics)[0].title()
+                reasons.append(f"Same fabric: {matched_fabric}")
+
+            # Price similarity (within 30% range)
+            if sold_out_product.price > 0 and product.price > 0:
+                price_ratio = product.price / sold_out_product.price
+                if 0.7 <= price_ratio <= 1.3:
+                    score += 0.10
+                    reasons.append("Similar price range")
+
+            # Only include if there's meaningful similarity
+            if score >= 0.25:
+                alternatives.append((score, product, reasons))
+
+        # Sort by score descending
+        alternatives.sort(key=lambda x: x[0], reverse=True)
+
+        # Convert to ScoredProduct
+        return [
+            ScoredProduct(
+                product=product,
+                score=score,
+                score_breakdown={"similarity": score},
+                reasons=reasons[:3],
+            )
+            for score, product, reasons in alternatives[:n]
+        ]
+
+    def get_wishlist_alternatives(
+        self,
+        customer: Customer,
+        products: list[Product],
+        n_per_item: int = 2,
+    ) -> dict[str, list[ScoredProduct]]:
+        """
+        Find alternatives for all sold-out items in a customer's wishlist.
+
+        Args:
+            customer: Customer with wishlist
+            products: Product catalog
+            n_per_item: Number of alternatives per sold-out item
+
+        Returns:
+            Dict mapping sold_out_product_id -> list of alternatives
+        """
+        # Build product lookup
+        product_map = {p.product_id: p for p in products}
+
+        alternatives = {}
+
+        for wishlist_product_id in customer.wishlist.active_wishlist_items:
+            product = product_map.get(wishlist_product_id)
+
+            # Skip if product not found or is in stock
+            if not product or product.is_in_stock:
+                continue
+
+            # Find alternatives for this sold-out item
+            alts = self.find_alternatives(product, products, n=n_per_item)
+            if alts:
+                alternatives[wishlist_product_id] = alts
+
+        return alternatives

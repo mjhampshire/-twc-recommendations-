@@ -166,6 +166,77 @@ async def get_similar_products(
     return [p for _, p in similar[:n]]
 
 
+@router.get("/alternatives/{retailer_id}/{product_id}")
+async def get_product_alternatives(
+    retailer_id: str,
+    product_id: str,
+    n: int = Query(default=3, ge=1, le=10),
+) -> list[ScoredProduct]:
+    """
+    Get in-stock alternatives for a sold-out product.
+
+    Useful for wishlist items that are no longer available.
+    Returns similar products based on category, brand, style, color, etc.
+    """
+    # Fetch the sold-out product
+    sold_out_product = await product_repo.get_product(retailer_id, product_id)
+    if not sold_out_product:
+        raise HTTPException(status_code=404, detail=f"Product {product_id} not found")
+
+    # Fetch all products
+    products = await product_repo.get_products_for_retailer(retailer_id)
+
+    # Find alternatives
+    alternatives = engine.find_alternatives(sold_out_product, products, n=n)
+
+    return alternatives
+
+
+class WishlistAlternativesResponse(BaseModel):
+    """Response containing alternatives for sold-out wishlist items."""
+    customer_id: str
+    retailer_id: str
+    alternatives: dict[str, list[ScoredProduct]]  # product_id -> alternatives
+    sold_out_count: int
+
+
+@router.get("/wishlist-alternatives/{retailer_id}/{customer_id}")
+async def get_wishlist_alternatives(
+    retailer_id: str,
+    customer_id: str,
+    n_per_item: int = Query(default=2, ge=1, le=5),
+) -> WishlistAlternativesResponse:
+    """
+    Get alternatives for all sold-out items in a customer's wishlist.
+
+    Returns a map of sold_out_product_id -> list of alternative products.
+    Only includes wishlist items that are currently out of stock.
+    """
+    # Fetch customer profile
+    customer = await customer_repo.get_customer(retailer_id, customer_id)
+    if not customer:
+        raise HTTPException(status_code=404, detail=f"Customer {customer_id} not found")
+
+    # Fetch product catalog
+    products = await product_repo.get_products_for_retailer(retailer_id)
+    if not products:
+        raise HTTPException(status_code=404, detail=f"No products found for retailer {retailer_id}")
+
+    # Get alternatives for sold-out wishlist items
+    alternatives = engine.get_wishlist_alternatives(
+        customer=customer,
+        products=products,
+        n_per_item=n_per_item,
+    )
+
+    return WishlistAlternativesResponse(
+        customer_id=customer_id,
+        retailer_id=retailer_id,
+        alternatives=alternatives,
+        sold_out_count=len(alternatives),
+    )
+
+
 @router.get("/health")
 async def health_check():
     """Health check endpoint."""

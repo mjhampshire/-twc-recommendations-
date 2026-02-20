@@ -39,6 +39,32 @@ class WishlistSummary(BaseModel):
     wishlist_colors: list[str] = []
 
 
+class BrowsingBehavior(BaseModel):
+    """Website browsing behavior from DynamoDB.
+
+    Captures product views, category browsing, and cart activity.
+    These are strong intent signals - especially add_to_cart.
+    """
+    # Product views (recent products they've looked at)
+    viewed_product_ids: list[str] = []          # Recent product IDs viewed
+    view_count_last_30_days: int = 0
+
+    # Category browsing patterns
+    viewed_categories: list[str] = []           # Categories browsed (ranked by frequency)
+    viewed_brands: list[str] = []               # Brands browsed
+    viewed_colors: list[str] = []               # Colors they've viewed
+
+    # Cart activity (high intent signal)
+    cart_product_ids: list[str] = []            # Currently in cart
+    abandoned_cart_product_ids: list[str] = []  # Added to cart but didn't purchase
+    cart_categories: list[str] = []
+    cart_brands: list[str] = []
+
+    # Session recency
+    last_browse_date: Optional[datetime] = None
+    sessions_last_30_days: int = 0
+
+
 class Customer(BaseModel):
     """Complete customer profile for recommendations."""
     customer_id: str
@@ -49,5 +75,6 @@ class Customer(BaseModel):
     preferences: CustomerPreferences = CustomerPreferences()
     purchase_history: PurchaseHistory = PurchaseHistory()
     wishlist: WishlistSummary = WishlistSummary()
+    browsing: BrowsingBehavior = BrowsingBehavior()
     created_at: Optional[datetime] = None
     last_activity: Optional[datetime] = None

@@ -130,6 +130,38 @@ def score_product(
     if wishlist_matches >= 2:
         reasons.append("Similar to wishlisted items")
 
+    # --- Browsing Behavior ---
+
+    browsing = customer.browsing
+
+    # Category they've been browsing
+    if attrs.category:
+        browse_cat_score = _item_in_list(attrs.category, browsing.viewed_categories)
+        scores['browsing_viewed_category'] = browse_cat_score * weights.browsing_viewed_category
+        if browse_cat_score > 0 and not any("category" in r.lower() for r in reasons):
+            reasons.append(f"Recently browsed: {attrs.category}")
+
+    # Brands they've been viewing
+    if attrs.brand:
+        browse_brand_score = _item_in_list(attrs.brand, browsing.viewed_brands)
+        scores['browsing_viewed_brand'] = browse_brand_score * weights.browsing_viewed_brand
+
+    # Cart similarity (high intent signal!)
+    cart_score = 0.0
+    cart_matches = 0
+
+    # Check if matches cart patterns
+    if attrs.category and attrs.category.lower() in {c.lower() for c in browsing.cart_categories}:
+        cart_score += 0.5
+        cart_matches += 1
+    if attrs.brand and attrs.brand.lower() in {b.lower() for b in browsing.cart_brands}:
+        cart_score += 0.5
+        cart_matches += 1
+
+    scores['browsing_cart_similarity'] = min(cart_score, 1.0) * weights.browsing_cart_similarity
+    if cart_matches >= 1:
+        reasons.append("Similar to items in your cart")
+
     # --- Product Performance ---
 
     # Popularity (normalize against reasonable max)

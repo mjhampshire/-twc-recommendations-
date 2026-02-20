@@ -8,7 +8,7 @@ from typing import Optional
 from datetime import datetime, timedelta
 
 from ..models import (
-    Customer, CustomerPreferences, PurchaseHistory, WishlistSummary,
+    Customer, CustomerPreferences, PurchaseHistory, WishlistSummary, BrowsingBehavior,
     Product, ProductAttributes, ProductSizing, ProductMetrics,
 )
 
@@ -93,10 +93,23 @@ _customer_sarah = Customer(
     ),
     wishlist=WishlistSummary(
         total_wishlisted=12,
-        active_wishlist_items=["prod_008", "prod_022"],
+        active_wishlist_items=["prod_008", "prod_022", "prod_099"],  # prod_099 is sold out
         wishlist_categories=["Dresses", "Accessories"],
         wishlist_brands=["Zimmermann", "Camilla"],
         wishlist_colors=["Navy", "Blush"],
+    ),
+    browsing=BrowsingBehavior(
+        viewed_product_ids=["prod_002", "prod_003", "prod_005", "prod_010"],
+        view_count_last_30_days=45,
+        viewed_categories=["Dresses", "Tops", "Knitwear"],
+        viewed_brands=["Zimmermann", "Scanlan Theodore", "Camilla"],
+        viewed_colors=["Navy", "Black", "Cream"],
+        cart_product_ids=["prod_005"],
+        abandoned_cart_product_ids=["prod_004"],
+        cart_categories=["Dresses"],
+        cart_brands=["Zimmermann"],
+        last_browse_date=datetime.now() - timedelta(hours=2),
+        sessions_last_30_days=12,
     ),
 )
 
