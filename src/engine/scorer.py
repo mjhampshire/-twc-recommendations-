@@ -4,7 +4,7 @@ This module contains the core scoring algorithm that evaluates how well
 a product matches a customer's profile based on configurable weights.
 """
 from typing import Optional
-from ..models import Customer, Product, ScoredProduct
+from ..models import Customer, Product, ScoredProduct, PreferenceItem, PreferenceSource, CustomerDislikes
 from ..config import RecommendationWeights, DEFAULT_WEIGHTS
 
 
@@ -13,6 +13,11 @@ def _normalize(value: float, max_value: float = 1.0) -> float:
     if max_value <= 0:
         return 0.0
     return min(max(value / max_value, 0.0), 1.0)
+
+
+def _extract_values(pref_items: list[PreferenceItem]) -> list[str]:
+    """Extract just the values from a list of PreferenceItems."""
+    return [item.value for item in pref_items]
 
 
 def _list_overlap_score(list1: list[str], list2: list[str]) -> float:
@@ -33,6 +38,104 @@ def _item_in_list(item: Optional[str], items: list[str]) -> float:
     return 1.0 if item.lower() in {i.lower() for i in items} else 0.0
 
 
+def _item_in_pref_list(
+    item: Optional[str],
+    pref_items: list[PreferenceItem],
+    weights: RecommendationWeights,
+) -> float:
+    """Check if item matches a preference list, applying source multiplier.
+
+    Returns weighted score (0.0 if no match, multiplied score if match).
+    """
+    if not item or not pref_items:
+        return 0.0
+    item_lower = item.lower()
+    for pref in pref_items:
+        if pref.value.lower() == item_lower:
+            multiplier = (
+                weights.customer_source_multiplier
+                if pref.source == PreferenceSource.CUSTOMER
+                else weights.staff_source_multiplier
+            )
+            return 1.0 * multiplier
+    return 0.0
+
+
+def _pref_list_overlap_score(
+    pref_items: list[PreferenceItem],
+    product_values: list[str],
+    weights: RecommendationWeights,
+) -> float:
+    """Calculate overlap score with source-weighted preferences.
+
+    For multiple matches, uses the highest source multiplier found.
+    """
+    if not pref_items or not product_values:
+        return 0.0
+
+    product_set = {v.lower() for v in product_values}
+    matches = []
+
+    for pref in pref_items:
+        if pref.value.lower() in product_set:
+            multiplier = (
+                weights.customer_source_multiplier
+                if pref.source == PreferenceSource.CUSTOMER
+                else weights.staff_source_multiplier
+            )
+            matches.append(multiplier)
+
+    if not matches:
+        return 0.0
+
+    # Base overlap score (proportion of preferences matched)
+    base_score = len(matches) / len(pref_items)
+    # Apply the highest multiplier among matches
+    return base_score * max(matches)
+
+
+def matches_dislikes(product: Product, dislikes: CustomerDislikes) -> bool:
+    """Check if a product matches any customer dislikes.
+
+    Returns True if product should be filtered out.
+    """
+    attrs = product.attributes
+
+    # Check category
+    if attrs.category:
+        dislike_categories = {d.value.lower() for d in dislikes.categories}
+        if attrs.category.lower() in dislike_categories:
+            return True
+
+    # Check brand
+    if attrs.brand:
+        dislike_brands = {d.value.lower() for d in dislikes.brands}
+        if attrs.brand.lower() in dislike_brands:
+            return True
+
+    # Check style
+    if attrs.style:
+        dislike_styles = {d.value.lower() for d in dislikes.styles}
+        if attrs.style.lower() in dislike_styles:
+            return True
+
+    # Check colors
+    product_colors = attrs.colors if attrs.colors else ([attrs.color] if attrs.color else [])
+    if product_colors:
+        dislike_colors = {d.value.lower() for d in dislikes.colors}
+        if any(c.lower() in dislike_colors for c in product_colors):
+            return True
+
+    # Check fabrics
+    product_fabrics = attrs.fabrics if attrs.fabrics else ([attrs.fabric] if attrs.fabric else [])
+    if product_fabrics:
+        dislike_fabrics = {d.value.lower() for d in dislikes.fabrics}
+        if any(f.lower() in dislike_fabrics for f in product_fabrics):
+            return True
+
+    return False
+
+
 def score_product(
     product: Product,
     customer: Customer,
@@ -51,41 +154,43 @@ def score_product(
     wishlist = customer.wishlist
     attrs = product.attributes
 
-    # --- Preference Matching ---
+    # --- Preference Matching (with source multipliers) ---
 
     # Category match
     if attrs.category:
-        cat_score = _item_in_list(attrs.category, prefs.categories)
+        cat_score = _item_in_pref_list(attrs.category, prefs.categories, weights)
         scores['preference_category'] = cat_score * weights.preference_category
         if cat_score > 0:
             reasons.append(f"Matches preferred category: {attrs.category}")
 
     # Color match
     color_items = attrs.colors if attrs.colors else ([attrs.color] if attrs.color else [])
-    color_score = _list_overlap_score(prefs.colors, color_items)
+    color_score = _pref_list_overlap_score(prefs.colors, color_items, weights)
     scores['preference_color'] = color_score * weights.preference_color
     if color_score > 0:
-        matched = [c for c in color_items if c.lower() in {p.lower() for p in prefs.colors}]
+        pref_color_values = {p.value.lower() for p in prefs.colors}
+        matched = [c for c in color_items if c.lower() in pref_color_values]
         reasons.append(f"Matches preferred color: {', '.join(matched)}")
 
     # Fabric match
     fabric_items = attrs.fabrics if attrs.fabrics else ([attrs.fabric] if attrs.fabric else [])
-    fabric_score = _list_overlap_score(prefs.fabrics, fabric_items)
+    fabric_score = _pref_list_overlap_score(prefs.fabrics, fabric_items, weights)
     scores['preference_fabric'] = fabric_score * weights.preference_fabric
     if fabric_score > 0:
-        matched = [f for f in fabric_items if f.lower() in {p.lower() for p in prefs.fabrics}]
+        pref_fabric_values = {p.value.lower() for p in prefs.fabrics}
+        matched = [f for f in fabric_items if f.lower() in pref_fabric_values]
         reasons.append(f"Matches preferred fabric: {', '.join(matched)}")
 
     # Style match
     if attrs.style:
-        style_score = _item_in_list(attrs.style, prefs.styles)
+        style_score = _item_in_pref_list(attrs.style, prefs.styles, weights)
         scores['preference_style'] = style_score * weights.preference_style
         if style_score > 0:
             reasons.append(f"Matches preferred style: {attrs.style}")
 
     # Brand match
     if attrs.brand:
-        brand_score = _item_in_list(attrs.brand, prefs.brands)
+        brand_score = _item_in_pref_list(attrs.brand, prefs.brands, weights)
         scores['preference_brand'] = brand_score * weights.preference_brand
         if brand_score > 0:
             reasons.append(f"Preferred brand: {attrs.brand}")

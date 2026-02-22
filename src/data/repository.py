@@ -8,9 +8,15 @@ from typing import Optional
 from datetime import datetime, timedelta
 
 from ..models import (
-    Customer, CustomerPreferences, PurchaseHistory, WishlistSummary, BrowsingBehavior,
+    Customer, CustomerPreferences, CustomerDislikes, PreferenceItem, PreferenceSource,
+    PurchaseHistory, WishlistSummary, BrowsingBehavior,
     Product, ProductAttributes, ProductSizing, ProductMetrics,
 )
+
+
+def _pref(value: str, source: PreferenceSource = PreferenceSource.STAFF) -> PreferenceItem:
+    """Helper to create PreferenceItem."""
+    return PreferenceItem(value=value, source=source)
 
 
 class CustomerRepository:
@@ -72,14 +78,38 @@ _customer_sarah = Customer(
     name="Sarah Johnson",
     is_vip=True,
     preferences=CustomerPreferences(
-        categories=["Dresses", "Tops", "Accessories"],
-        colors=["Navy", "Black", "Cream", "Blush"],
-        fabrics=["Silk", "Cashmere", "Linen"],
-        styles=["Classic", "Minimalist"],
-        brands=["Zimmermann", "Scanlan Theodore", "Camilla"],
+        categories=[
+            _pref("Dresses", PreferenceSource.CUSTOMER),
+            _pref("Tops", PreferenceSource.CUSTOMER),
+            _pref("Accessories", PreferenceSource.STAFF),
+        ],
+        colors=[
+            _pref("Navy", PreferenceSource.CUSTOMER),
+            _pref("Black", PreferenceSource.CUSTOMER),
+            _pref("Cream", PreferenceSource.STAFF),
+            _pref("Blush", PreferenceSource.STAFF),
+        ],
+        fabrics=[
+            _pref("Silk", PreferenceSource.CUSTOMER),
+            _pref("Cashmere", PreferenceSource.STAFF),
+            _pref("Linen", PreferenceSource.STAFF),
+        ],
+        styles=[
+            _pref("Classic", PreferenceSource.CUSTOMER),
+            _pref("Minimalist", PreferenceSource.STAFF),
+        ],
+        brands=[
+            _pref("Zimmermann", PreferenceSource.CUSTOMER),
+            _pref("Scanlan Theodore", PreferenceSource.STAFF),
+            _pref("Camilla", PreferenceSource.STAFF),
+        ],
         size_dress="10",
         size_top="S",
         price_sensitivity="luxury",
+    ),
+    dislikes=CustomerDislikes(
+        brands=[_pref("Aje")],  # Doesn't like this brand
+        colors=[_pref("Red")],  # Doesn't like red
     ),
     purchase_history=PurchaseHistory(
         total_purchases=24,
@@ -121,9 +151,9 @@ _customer_emma = Customer(
     name="Emma Williams",
     is_vip=True,
     preferences=CustomerPreferences(
-        categories=["Dresses"],
-        colors=["Red", "Black"],
-        styles=["Bold"],
+        categories=[_pref("Dresses", PreferenceSource.CUSTOMER)],
+        colors=[_pref("Red", PreferenceSource.CUSTOMER), _pref("Black", PreferenceSource.CUSTOMER)],
+        styles=[_pref("Bold", PreferenceSource.CUSTOMER)],
         size_dress="8",
     ),
     purchase_history=PurchaseHistory(

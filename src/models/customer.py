@@ -1,21 +1,46 @@
 """Customer data models."""
+from enum import Enum
 from typing import Optional
 from pydantic import BaseModel
 from datetime import datetime
 
 
+class PreferenceSource(str, Enum):
+    """Source of a preference entry."""
+    CUSTOMER = "customer"  # Entered directly by the customer
+    STAFF = "staff"        # Entered by staff member
+
+
+class PreferenceItem(BaseModel):
+    """A single preference with its source."""
+    value: str
+    source: PreferenceSource = PreferenceSource.STAFF
+
+
 class CustomerPreferences(BaseModel):
     """Customer's stated preferences."""
-    categories: list[str] = []      # e.g., ["Dresses", "Tops", "Accessories"]
-    colors: list[str] = []          # e.g., ["Navy", "Black", "Cream"]
-    fabrics: list[str] = []         # e.g., ["Silk", "Cotton", "Linen"]
-    styles: list[str] = []          # e.g., ["Classic", "Bohemian", "Minimalist"]
-    brands: list[str] = []          # e.g., ["Zimmermann", "Scanlan Theodore"]
+    categories: list[PreferenceItem] = []   # e.g., Dresses, Tops, Accessories
+    colors: list[PreferenceItem] = []       # e.g., Navy, Black, Cream
+    fabrics: list[PreferenceItem] = []      # e.g., Silk, Cotton, Linen
+    styles: list[PreferenceItem] = []       # e.g., Classic, Bohemian, Minimalist
+    brands: list[PreferenceItem] = []       # e.g., Zimmermann, Scanlan Theodore
     size_top: Optional[str] = None
     size_bottom: Optional[str] = None
     size_dress: Optional[str] = None
     size_shoe: Optional[str] = None
     price_sensitivity: Optional[str] = None  # "budget", "mid", "luxury", "any"
+
+
+class CustomerDislikes(BaseModel):
+    """Things the customer does NOT want to see.
+
+    Products matching any dislike will be filtered out (hard filter).
+    """
+    categories: list[PreferenceItem] = []   # Categories to avoid
+    colors: list[PreferenceItem] = []       # Colors to avoid
+    fabrics: list[PreferenceItem] = []      # Fabrics to avoid
+    styles: list[PreferenceItem] = []       # Styles to avoid
+    brands: list[PreferenceItem] = []       # Brands to avoid
 
 
 class PurchaseHistory(BaseModel):
@@ -73,6 +98,7 @@ class Customer(BaseModel):
     name: Optional[str] = None
     is_vip: bool = False
     preferences: CustomerPreferences = CustomerPreferences()
+    dislikes: CustomerDislikes = CustomerDislikes()
     purchase_history: PurchaseHistory = PurchaseHistory()
     wishlist: WishlistSummary = WishlistSummary()
     browsing: BrowsingBehavior = BrowsingBehavior()

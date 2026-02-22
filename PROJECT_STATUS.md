@@ -20,12 +20,15 @@ A product recommendation engine for The Wishlist Company that provides personali
 - Auto-detects new customers and adjusts strategy
 - Diversity algorithm (avoids recommending 4 similar items)
 - Human-readable explanations ("Matches preferred brand: Zimmermann")
+- **Dislikes filtering** - Hard filter for products matching customer dislikes (brand, color, style, etc.)
+- **Preference source tracking** - Each preference records whether it was entered by staff or customer, with configurable score multipliers
 
 ### 2. Data Signals Supported
 
 | Signal Type | Source | Examples |
 |-------------|--------|----------|
-| **Preferences** | Customer profile | Categories, colors, fabrics, styles, brands, sizes |
+| **Preferences** | Customer profile | Categories, colors, fabrics, styles, brands, sizes (with staff/customer source tracking) |
+| **Dislikes** | Customer profile | Categories, colors, fabrics, styles, brands to avoid (hard filter) |
 | **Purchase History** | Transaction data | Top categories, brands, colors purchased |
 | **Wishlist** | Wishlist activity | Wishlisted categories, brands, colors |
 | **Browsing Behavior** | Website events (DynamoDB) | Viewed categories, brands; cart items |
@@ -69,7 +72,7 @@ twc-recommendations/
 │   └── config/
 │       └── weights.py    # Configurable weight presets
 ├── tests/
-│   └── test_recommender.py  # 11 tests, all passing
+│   └── test_recommender.py  # 18 tests, all passing
 ├── requirements.txt
 └── README.md
 ```

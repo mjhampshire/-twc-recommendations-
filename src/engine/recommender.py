@@ -9,7 +9,7 @@ This module orchestrates the recommendation process:
 from typing import Optional
 from ..models import Customer, Product, ScoredProduct
 from ..config import RecommendationWeights, DEFAULT_WEIGHTS, NEW_CUSTOMER_WEIGHTS
-from .scorer import score_product
+from .scorer import score_product, matches_dislikes
 
 
 class RecommendationEngine:
@@ -82,6 +82,10 @@ class RecommendationEngine:
 
             # Must be same retailer
             if product.retailer_id != customer.retailer_id:
+                continue
+
+            # Filter out products matching customer dislikes (hard filter)
+            if matches_dislikes(product, customer.dislikes):
                 continue
 
             filtered.append(product)

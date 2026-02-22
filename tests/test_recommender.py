@@ -3,11 +3,17 @@ import pytest
 from datetime import datetime, timedelta
 
 from src.models import (
-    Customer, CustomerPreferences, PurchaseHistory, WishlistSummary,
+    Customer, CustomerPreferences, CustomerDislikes, PreferenceItem, PreferenceSource,
+    PurchaseHistory, WishlistSummary,
     Product, ProductAttributes, ProductSizing, ProductMetrics,
 )
-from src.config import DEFAULT_WEIGHTS, PREFERENCE_HEAVY_WEIGHTS
+from src.config import DEFAULT_WEIGHTS, PREFERENCE_HEAVY_WEIGHTS, RecommendationWeights
 from src.engine import RecommendationEngine, score_product
+
+
+def pref(value: str, source: PreferenceSource = PreferenceSource.STAFF) -> PreferenceItem:
+    """Helper to create PreferenceItem."""
+    return PreferenceItem(value=value, source=source)
 
 
 @pytest.fixture
@@ -19,11 +25,11 @@ def sample_customer():
         name="Test Customer",
         is_vip=True,
         preferences=CustomerPreferences(
-            categories=["Dresses", "Tops"],
-            colors=["Navy", "Black"],
-            fabrics=["Silk"],
-            styles=["Classic"],
-            brands=["BrandA", "BrandB"],
+            categories=[pref("Dresses"), pref("Tops")],
+            colors=[pref("Navy"), pref("Black")],
+            fabrics=[pref("Silk")],
+            styles=[pref("Classic")],
+            brands=[pref("BrandA"), pref("BrandB")],
             size_dress="10",
         ),
         purchase_history=PurchaseHistory(
@@ -204,6 +210,138 @@ class TestExplainRecommendation:
         explanation = engine.explain_recommendation(scored)
         assert len(explanation) > 0
         assert isinstance(explanation, str)
+
+
+class TestDislikes:
+    """Test dislike filtering."""
+
+    def test_disliked_brand_filtered_out(self, sample_products):
+        """Products matching disliked brand should be filtered out."""
+        customer = Customer(
+            customer_id="test_dislikes",
+            retailer_id="test_retailer",
+            preferences=CustomerPreferences(
+                categories=[pref("Dresses")],
+            ),
+            dislikes=CustomerDislikes(
+                brands=[pref("BrandA")],  # Dislike BrandA
+            ),
+        )
+        engine = RecommendationEngine()
+        recs = engine.recommend(customer, sample_products, n=10)
+        product_ids = [r.product.product_id for r in recs]
+        # p1 is BrandA, should be filtered
+        assert "p1" not in product_ids
+
+    def test_disliked_color_filtered_out(self, sample_products):
+        """Products matching disliked color should be filtered out."""
+        customer = Customer(
+            customer_id="test_dislikes",
+            retailer_id="test_retailer",
+            preferences=CustomerPreferences(
+                categories=[pref("Dresses")],
+            ),
+            dislikes=CustomerDislikes(
+                colors=[pref("Navy")],  # Dislike Navy
+            ),
+        )
+        engine = RecommendationEngine()
+        recs = engine.recommend(customer, sample_products, n=10)
+        product_ids = [r.product.product_id for r in recs]
+        # p1 is Navy, should be filtered
+        assert "p1" not in product_ids
+
+    def test_disliked_category_filtered_out(self, sample_products):
+        """Products matching disliked category should be filtered out."""
+        customer = Customer(
+            customer_id="test_dislikes",
+            retailer_id="test_retailer",
+            preferences=CustomerPreferences(
+                categories=[pref("Tops")],  # Has some preferences so score isn't zero
+            ),
+            dislikes=CustomerDislikes(
+                categories=[pref("Dresses")],  # Dislike Dresses
+            ),
+        )
+        engine = RecommendationEngine(min_score_threshold=0)  # Allow low scores for this test
+        recs = engine.recommend(customer, sample_products, n=10)
+        product_ids = [r.product.product_id for r in recs]
+        # p1, p2 are Dresses, should be filtered
+        assert "p1" not in product_ids
+        assert "p2" not in product_ids
+        # p3 is Tops, should remain
+        assert "p3" in product_ids
+
+    def test_no_dislikes_no_filtering(self, sample_customer, sample_products):
+        """Without dislikes, no additional filtering happens."""
+        engine = RecommendationEngine()
+        recs = engine.recommend(sample_customer, sample_products, n=10)
+        # All in-stock products should be candidates
+        assert len(recs) == 3  # p1, p2, p3 (p4 is out of stock)
+
+
+class TestPreferenceSource:
+    """Test preference source multipliers."""
+
+    def test_customer_source_multiplier_boosts_score(self, sample_products):
+        """Customer-entered preferences with multiplier > 1 should boost score."""
+        # Customer with customer-entered preference
+        customer = Customer(
+            customer_id="test_source",
+            retailer_id="test_retailer",
+            preferences=CustomerPreferences(
+                brands=[pref("BrandA", PreferenceSource.CUSTOMER)],
+            ),
+        )
+
+        weights_boosted = RecommendationWeights(customer_source_multiplier=1.5)
+        weights_normal = RecommendationWeights(customer_source_multiplier=1.0)
+
+        scored_boosted = score_product(sample_products[0], customer, weights_boosted)
+        scored_normal = score_product(sample_products[0], customer, weights_normal)
+
+        assert scored_boosted.score > scored_normal.score
+
+    def test_staff_source_multiplier_reduces_score(self, sample_products):
+        """Staff-entered preferences with multiplier < 1 should reduce score."""
+        customer = Customer(
+            customer_id="test_source",
+            retailer_id="test_retailer",
+            preferences=CustomerPreferences(
+                brands=[pref("BrandA", PreferenceSource.STAFF)],
+            ),
+        )
+
+        weights_reduced = RecommendationWeights(staff_source_multiplier=0.8)
+        weights_normal = RecommendationWeights(staff_source_multiplier=1.0)
+
+        scored_reduced = score_product(sample_products[0], customer, weights_reduced)
+        scored_normal = score_product(sample_products[0], customer, weights_normal)
+
+        assert scored_reduced.score < scored_normal.score
+
+    def test_mixed_sources_uses_highest_multiplier(self, sample_products):
+        """When multiple preferences match, use the highest source multiplier."""
+        # Product p1 is Navy - customer has Navy from both sources
+        customer = Customer(
+            customer_id="test_source",
+            retailer_id="test_retailer",
+            preferences=CustomerPreferences(
+                colors=[
+                    pref("Navy", PreferenceSource.STAFF),
+                    pref("Black", PreferenceSource.CUSTOMER),  # Not on product
+                ],
+            ),
+        )
+
+        weights = RecommendationWeights(
+            customer_source_multiplier=1.5,
+            staff_source_multiplier=0.8,
+        )
+
+        # Only Navy matches, and it's staff-entered, so should use 0.8
+        scored = score_product(sample_products[0], customer, weights)
+        assert scored.score_breakdown.get('preference_color', 0) > 0
 
 
 if __name__ == "__main__":

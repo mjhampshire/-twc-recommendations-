@@ -44,10 +44,20 @@ class RecommendationWeights(BaseModel):
     # Size availability
     size_match_boost: float = 0.02
 
+    # Source multipliers (applied to preference scores based on who entered them)
+    # Values > 1.0 boost that source, < 1.0 reduce it
+    customer_source_multiplier: float = 1.0  # Preferences entered by customer
+    staff_source_multiplier: float = 1.0     # Preferences entered by staff
+
     @field_validator('*', mode='before')
     @classmethod
     def validate_weight(cls, v, info):
         if info.field_name == 'in_stock_requirement':
+            return v
+        # Source multipliers can be > 1.0 (they're multipliers, not weights)
+        if info.field_name in ('customer_source_multiplier', 'staff_source_multiplier'):
+            if isinstance(v, (int, float)) and v < 0:
+                raise ValueError(f"Multiplier must be non-negative")
             return v
         if isinstance(v, (int, float)) and (v < 0 or v > 1):
             raise ValueError(f"Weight must be between 0 and 1")
