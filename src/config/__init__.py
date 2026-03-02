@@ -6,6 +6,7 @@ from .weights import (
     BEHAVIOR_HEAVY_WEIGHTS,
     NEW_CUSTOMER_WEIGHTS,
 )
+from .clickhouse import ClickHouseConfig, get_clickhouse_config
 
 __all__ = [
     "RecommendationWeights",
@@ -13,4 +14,6 @@ __all__ = [
     "PREFERENCE_HEAVY_WEIGHTS",
     "BEHAVIOR_HEAVY_WEIGHTS",
     "NEW_CUSTOMER_WEIGHTS",
+    "ClickHouseConfig",
+    "get_clickhouse_config",
 ]

@@ -91,11 +91,14 @@ class BrowsingBehavior(BaseModel):
 
 
 class Customer(BaseModel):
-    """Complete customer profile for recommendations."""
-    customer_id: str
+    """Complete customer profile for recommendations.
+
+    Note: This model is intentionally anonymized. Customer PII (name, email, etc.)
+    is NOT stored in the recommendation engine. The customer_id is an opaque
+    identifier that maps to customer data in the source system.
+    """
+    customer_id: str  # Anonymized identifier - no PII
     retailer_id: str
-    email: Optional[str] = None
-    name: Optional[str] = None
     is_vip: bool = False
     preferences: CustomerPreferences = CustomerPreferences()
     dislikes: CustomerDislikes = CustomerDislikes()

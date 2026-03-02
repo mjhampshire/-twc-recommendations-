@@ -71,11 +71,9 @@ class ProductRepository:
 # =============================================================================
 
 # Sample VIP customer with rich profile
-_customer_sarah = Customer(
+_customer_001 = Customer(
     customer_id="cust_001",
     retailer_id="retailer_luxe",
-    email="sarah.j@email.com",
-    name="Sarah Johnson",
     is_vip=True,
     preferences=CustomerPreferences(
         categories=[
@@ -144,11 +142,9 @@ _customer_sarah = Customer(
 )
 
 # New customer with minimal data
-_customer_emma = Customer(
+_customer_002 = Customer(
     customer_id="cust_002",
     retailer_id="retailer_luxe",
-    email="emma.w@email.com",
-    name="Emma Williams",
     is_vip=True,
     preferences=CustomerPreferences(
         categories=[_pref("Dresses", PreferenceSource.CUSTOMER)],
@@ -166,11 +162,9 @@ _customer_emma = Customer(
 )
 
 # Customer with strong purchase history but few stated preferences
-_customer_michael = Customer(
+_customer_003 = Customer(
     customer_id="cust_003",
     retailer_id="retailer_luxe",
-    email="michael.c@email.com",
-    name="Michael Chen",
     is_vip=True,
     preferences=CustomerPreferences(
         size_top="M",
@@ -196,9 +190,9 @@ _customer_michael = Customer(
 )
 
 MOCK_CUSTOMERS = {
-    "retailer_luxe:cust_001": _customer_sarah,
-    "retailer_luxe:cust_002": _customer_emma,
-    "retailer_luxe:cust_003": _customer_michael,
+    "retailer_luxe:cust_001": _customer_001,
+    "retailer_luxe:cust_002": _customer_002,
+    "retailer_luxe:cust_003": _customer_003,
 }
 
 
