@@ -152,9 +152,10 @@ class TestRecommendationEngine:
         assert len(recs) <= 2
 
     def test_excludes_out_of_stock(self, sample_customer, sample_products):
-        """Out of stock products should be excluded."""
+        """Out of stock products should be excluded when in_stock_requirement=True."""
         engine = RecommendationEngine()
-        recs = engine.recommend(sample_customer, sample_products, n=10)
+        weights = RecommendationWeights(in_stock_requirement=True)
+        recs = engine.recommend(sample_customer, sample_products, n=10, weights=weights)
         product_ids = [r.product.product_id for r in recs]
         assert "p4" not in product_ids
 
@@ -276,8 +277,8 @@ class TestDislikes:
         """Without dislikes, no additional filtering happens."""
         engine = RecommendationEngine()
         recs = engine.recommend(sample_customer, sample_products, n=10)
-        # All in-stock products should be candidates
-        assert len(recs) == 3  # p1, p2, p3 (p4 is out of stock)
+        # All products should be candidates (stock filtering disabled by default)
+        assert len(recs) == 4  # p1, p2, p3, p4
 
 
 class TestPreferenceSource:

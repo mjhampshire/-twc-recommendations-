@@ -449,7 +449,7 @@ class ClickHouseProductRepository:
     def get_products_for_retailer(
         self,
         tenant_id: str,
-        in_stock_only: bool = True,
+        in_stock_only: bool = False,  # NOTE: inStock not yet populated - frontend handles filtering
         limit: int = 1000,
     ) -> list[Product]:
         """Fetch all active products for a retailer."""

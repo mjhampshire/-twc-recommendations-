@@ -100,6 +100,7 @@ twc-recommendations/
 - [ ] Connect `ProductRepository` to product catalog (DynamoDB or Shopify)
 - [ ] Add ClickHouse queries for behavioral aggregations
 - [ ] Implement browsing event ingestion
+- [ ] Populate `inStock` field in TWCVARIANT (currently frontend handles stock filtering)
 
 ### Additional Use Cases
 - [ ] **Complete the Look** - "You're trying on X, here's what pairs with it"

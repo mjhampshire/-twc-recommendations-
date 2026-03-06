@@ -39,7 +39,8 @@ class RecommendationWeights(BaseModel):
     new_arrival_boost: float = 0.04
 
     # Availability
-    in_stock_requirement: bool = True  # Filter, not a weight
+    # NOTE: in_stock data not yet populated in TWCVARIANT - frontend handles filtering
+    in_stock_requirement: bool = False  # Filter, not a weight
 
     # Size availability
     size_match_boost: float = 0.02
