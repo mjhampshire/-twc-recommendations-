@@ -76,8 +76,8 @@ class RecommendationEngine:
             if product.product_id in exclude_ids:
                 continue
 
-            # Skip out of stock if required
-            if weights.in_stock_requirement and not product.is_in_stock:
+            # Skip out of stock if required (check stock_status field)
+            if weights.in_stock_requirement and product.stock_status == "out_of_stock":
                 continue
 
             # Must be same retailer
@@ -236,8 +236,8 @@ class RecommendationEngine:
         source_attrs = sold_out_product.attributes
 
         for product in products:
-            # Must be in stock
-            if not product.is_in_stock:
+            # Must be in stock (skip if explicitly out_of_stock)
+            if product.stock_status == "out_of_stock":
                 continue
 
             # Must be same retailer
@@ -336,8 +336,8 @@ class RecommendationEngine:
         for wishlist_product_id in customer.wishlist.active_wishlist_items:
             product = product_map.get(wishlist_product_id)
 
-            # Skip if product not found or is in stock
-            if not product or product.is_in_stock:
+            # Skip if product not found or is in stock (only find alternatives for out_of_stock items)
+            if not product or product.stock_status != "out_of_stock":
                 continue
 
             # Find alternatives for this sold-out item

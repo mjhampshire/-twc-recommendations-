@@ -47,7 +47,7 @@ class Product(BaseModel):
     sizing: ProductSizing = ProductSizing()
     metrics: ProductMetrics = ProductMetrics()
     is_new_arrival: bool = False
-    is_in_stock: bool = True
+    stock_status: Optional[str] = None  # Variant status from TWCVARIANT (e.g., "in_stock", "out_of_stock", "low_stock")
     created_at: Optional[datetime] = None
 
 

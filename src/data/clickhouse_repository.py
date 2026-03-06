@@ -513,5 +513,5 @@ class ClickHouseProductRepository:
                 available_sizes=[size] if size else [],
                 size_type="AU",  # Assuming AU sizing
             ),
-            is_in_stock=bool(in_stock),
+            stock_status="in_stock" if in_stock else "out_of_stock",  # Map boolean to status string
         )

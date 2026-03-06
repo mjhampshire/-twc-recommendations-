@@ -236,7 +236,7 @@ def _create_product(
             trending_score=trending,
         ),
         is_new_arrival=is_new,
-        is_in_stock=True,
+        stock_status=None,  # Status not yet populated
     )
 
 
@@ -270,7 +270,7 @@ MOCK_PRODUCTS = {
             name="Zimmermann Sold Out Dress",
             price=900,
             attributes=ProductAttributes(category="Dresses", brand="Zimmermann", color="Navy"),
-            is_in_stock=False,
+            stock_status="out_of_stock",
         ),
     ]
 }

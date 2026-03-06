@@ -65,7 +65,7 @@ def sample_products():
             ),
             sizing=ProductSizing(available_sizes=["8", "10", "12"]),
             metrics=ProductMetrics(total_purchases=50, total_wishlisted=100),
-            is_in_stock=True,
+            stock_status=None,
         ),
         Product(
             product_id="p2",
@@ -81,7 +81,7 @@ def sample_products():
                 style="Casual",
             ),
             sizing=ProductSizing(available_sizes=["10"]),
-            is_in_stock=True,
+            stock_status=None,
         ),
         Product(
             product_id="p3",
@@ -97,7 +97,7 @@ def sample_products():
                 style="Classic",
             ),
             sizing=ProductSizing(available_sizes=["S", "M"]),
-            is_in_stock=True,
+            stock_status=None,
         ),
         Product(
             product_id="p4",
@@ -109,7 +109,7 @@ def sample_products():
                 brand="BrandA",
                 color="Navy",
             ),
-            is_in_stock=False,
+            stock_status="out_of_stock",
         ),
     ]
 
