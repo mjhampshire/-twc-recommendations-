@@ -153,11 +153,14 @@ SETTINGS index_granularity = 8192;
 ```
 
 **Key Fields:**
-- `status` - Variant availability status (used for frontend filtering)
+- `status` - Shopify product status: `active`, `draft`, `archived`, `deleted` (filter for `active` only)
+- `inStock` - Stock availability flag (not yet populated - for future frontend filtering)
 - `collection` - Fashion collection (e.g., "Summer 2025")
 - `subCategory` - Product subcategory
-- `sizeType` - Size system (e.g., "AU", "US", "EU")
+- `sizeType` - Size system (e.g., "AU", "US", "EU") - not always populated
 - `tags` - Searchable tags
+
+**Note:** Not all fields are populated for all variants. The API handles null values gracefully.
 
 ---
 

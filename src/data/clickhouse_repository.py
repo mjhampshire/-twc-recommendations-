@@ -430,10 +430,11 @@ class ClickHouseProductRepository:
                     price,
                     imageUrl,
                     url,
-                    status
+                    inStock
                 FROM TWCVARIANT
                 WHERE tenantId = {tenant_id:String}
                   AND variantRef = {product_id:String}
+                  AND status = 'active'
                   AND deleted = 0
                 LIMIT 1
             """
@@ -475,9 +476,10 @@ class ClickHouseProductRepository:
                     price,
                     imageUrl,
                     url,
-                    status
+                    inStock
                 FROM TWCVARIANT
                 WHERE tenantId = {tenant_id:String}
+                  AND status = 'active'
                   AND deleted = 0
                 ORDER BY updatedAt DESC
                 LIMIT {limit:UInt32}
@@ -497,8 +499,16 @@ class ClickHouseProductRepository:
         (
             product_ref, variant_ref, product_name, variant_name,
             brand, category, sub_category, collection, color, size, size_type,
-            price, image_url, url, status
+            price, image_url, url, in_stock
         ) = row
+
+        # Map inStock (UInt8) to stock_status string
+        # NOTE: inStock not yet populated - will be used for frontend filtering in future
+        stock_status = None
+        if in_stock == 1:
+            stock_status = "in_stock"
+        elif in_stock == 0:
+            stock_status = "out_of_stock"
 
         return Product(
             product_id=variant_ref,
@@ -517,7 +527,7 @@ class ClickHouseProductRepository:
             ),
             sizing=ProductSizing(
                 available_sizes=[size] if size else [],
-                size_type=size_type or "AU",
+                size_type=size_type,  # May be None if not populated
             ),
-            stock_status=status,  # Use status field directly
+            stock_status=stock_status,
         )
