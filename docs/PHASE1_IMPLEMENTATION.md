@@ -121,32 +121,43 @@ SETTINGS index_granularity = 8192;
 Product catalog with variant-level detail.
 
 ```sql
-CREATE TABLE IF NOT EXISTS default.TWCVARIANT
+CREATE TABLE default.TWCVARIANT
 (
+    `variantId` String,
+    `productId` String,
     `tenantId` String,
     `productRef` String,
     `variantRef` String,
     `productName` String,
     `variantName` Nullable(String),
-    `brand` String,
-    `category` String,
+    `brand` Nullable(String),
+    `category` Nullable(String),
+    `subCategory` Nullable(String),
+    `collection` Nullable(String),
     `color` Nullable(String),
     `size` Nullable(String),
+    `sizeType` Nullable(String),
     `price` Float32,
+    `tags` Nullable(String),
     `imageUrl` Nullable(String),
-    `productUrl` Nullable(String),
+    `url` Nullable(String),
     `inStock` UInt8 DEFAULT 1,
+    `status` String,                    -- Variant status (e.g., "in_stock", "out_of_stock")
+    `deleted` UInt8 DEFAULT 1,
     `createdAt` DateTime DEFAULT now(),
     `updatedAt` DateTime DEFAULT now()
 )
-ENGINE = MergeTree()
-PARTITION BY toYYYYMM(updatedAt)
+ENGINE = SharedReplacingMergeTree('/clickhouse/tables/{uuid}/{shard}', '{replica}', updatedAt)
 ORDER BY (tenantId, variantRef)
 SETTINGS index_granularity = 8192;
-
--- Index for product lookups
-ALTER TABLE default.TWCVARIANT ADD INDEX idx_product_ref productRef TYPE bloom_filter GRANULARITY 1;
 ```
+
+**Key Fields:**
+- `status` - Variant availability status (used for frontend filtering)
+- `collection` - Fashion collection (e.g., "Summer 2025")
+- `subCategory` - Product subcategory
+- `sizeType` - Size system (e.g., "AU", "US", "EU")
+- `tags` - Searchable tags
 
 ---
 

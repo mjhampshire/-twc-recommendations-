@@ -422,15 +422,19 @@ class ClickHouseProductRepository:
                     variantName,
                     brand,
                     category,
+                    subCategory,
+                    collection,
                     color,
                     size,
+                    sizeType,
                     price,
                     imageUrl,
-                    productUrl,
-                    inStock
+                    url,
+                    status
                 FROM TWCVARIANT
                 WHERE tenantId = {tenant_id:String}
                   AND variantRef = {product_id:String}
+                  AND deleted = 0
                 LIMIT 1
             """
 
@@ -449,16 +453,13 @@ class ClickHouseProductRepository:
     def get_products_for_retailer(
         self,
         tenant_id: str,
-        in_stock_only: bool = False,  # NOTE: inStock not yet populated - frontend handles filtering
         limit: int = 1000,
     ) -> list[Product]:
         """Fetch all active products for a retailer."""
         client = _get_client(self.config)
 
         try:
-            stock_filter = "AND inStock = 1" if in_stock_only else ""
-
-            query = f"""
+            query = """
                 SELECT
                     productRef,
                     variantRef,
@@ -466,17 +467,20 @@ class ClickHouseProductRepository:
                     variantName,
                     brand,
                     category,
+                    subCategory,
+                    collection,
                     color,
                     size,
+                    sizeType,
                     price,
                     imageUrl,
-                    productUrl,
-                    inStock
+                    url,
+                    status
                 FROM TWCVARIANT
-                WHERE tenantId = {{tenant_id:String}}
-                  {stock_filter}
+                WHERE tenantId = {tenant_id:String}
+                  AND deleted = 0
                 ORDER BY updatedAt DESC
-                LIMIT {{limit:UInt32}}
+                LIMIT {limit:UInt32}
             """
 
             result = client.query(
@@ -492,7 +496,8 @@ class ClickHouseProductRepository:
         """Convert a database row to a Product model."""
         (
             product_ref, variant_ref, product_name, variant_name,
-            brand, category, color, size, price, image_url, product_url, in_stock
+            brand, category, sub_category, collection, color, size, size_type,
+            price, image_url, url, status
         ) = row
 
         return Product(
@@ -501,17 +506,18 @@ class ClickHouseProductRepository:
             name=product_name or "",
             price=float(price or 0),
             image_url=image_url,
-            product_url=product_url,
+            product_url=url,
             attributes=ProductAttributes(
                 category=category,
+                subcategory=sub_category,
                 brand=brand,
                 color=color,
                 colors=[color] if color else [],
-                # fabric and style not available yet
+                season=collection,  # Map collection to season field
             ),
             sizing=ProductSizing(
                 available_sizes=[size] if size else [],
-                size_type="AU",  # Assuming AU sizing
+                size_type=size_type or "AU",
             ),
-            stock_status="in_stock" if in_stock else "out_of_stock",  # Map boolean to status string
+            stock_status=status,  # Use status field directly
         )
