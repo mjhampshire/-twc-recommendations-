@@ -8,6 +8,7 @@ class ProductAttributes(BaseModel):
     """Product attributes used for matching."""
     category: Optional[str] = None       # e.g., "Dresses"
     subcategory: Optional[str] = None    # e.g., "Midi Dresses"
+    collection: Optional[str] = None     # e.g., "Summer 2025"
     color: Optional[str] = None          # Primary color
     colors: list[str] = []               # All colors
     fabric: Optional[str] = None         # Primary fabric

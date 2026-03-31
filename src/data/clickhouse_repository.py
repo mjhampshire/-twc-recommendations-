@@ -90,9 +90,9 @@ class ClickHouseCustomerRepository:
                 preferences,
                 rangeName,
                 updatedAt
-            FROM PREFERENCES
+            FROM TWCPREFERENCES FINAL
             WHERE tenantId = {tenant_id:String}
-              AND customerId = {customer_id:String}
+              AND customerRef = {customer_id:String}
               AND deleted = '0'
             ORDER BY isPrimary DESC, updatedAt DESC
             LIMIT 1
@@ -123,9 +123,10 @@ class ClickHouseCustomerRepository:
                 sum(o.amount) as total_spend,
                 avg(o.amount) as avg_order_value,
                 max(o.orderDate) as last_purchase_date
-            FROM ALLORDERS o
+            FROM TWCALLORDERS o FINAL
             WHERE o.tenantId = {tenant_id:String}
               AND o.customerRef = {customer_id:String}
+              AND o.eventType != 'DELETE'
         """
 
         stats_result = client.query(
@@ -149,10 +150,11 @@ class ClickHouseCustomerRepository:
                 p.brand,
                 p.color,
                 count(*) as cnt
-            FROM ORDERLINE ol
-            JOIN TWCVARIANT p ON ol.variantRef = p.variantRef AND ol.tenantId = p.tenantId
+            FROM ORDERLINE ol FINAL
+            JOIN TWCVARIANT p FINAL ON ol.variantRef = p.variantRef AND ol.tenantId = p.tenantId
             WHERE ol.tenantId = {tenant_id:String}
               AND ol.customerRef = {customer_id:String}
+              AND ol.eventType != 'DELETE'
             GROUP BY p.category, p.brand, p.color
             ORDER BY cnt DESC
             LIMIT 20
@@ -184,9 +186,10 @@ class ClickHouseCustomerRepository:
         # Get recent product IDs
         recent_query = """
             SELECT DISTINCT ol.variantRef
-            FROM ORDERLINE ol
+            FROM ORDERLINE ol FINAL
             WHERE ol.tenantId = {tenant_id:String}
               AND ol.customerRef = {customer_id:String}
+              AND ol.eventType != 'DELETE'
             ORDER BY ol.orderLineDate DESC
             LIMIT 10
         """
@@ -215,10 +218,10 @@ class ClickHouseCustomerRepository:
                 wi.productRef,
                 wi.category,
                 wi.brandId
-            FROM TWCWISHLIST w
-            JOIN WISHLISTITEM wi ON w.wishlistId = wi.wishlistId AND w.tenantId = wi.tenantId
+            FROM TWCWISHLIST w FINAL
+            JOIN WISHLISTITEM wi FINAL ON w.wishlistId = wi.wishlistId AND w.tenantId = wi.tenantId
             WHERE w.tenantId = {tenant_id:String}
-              AND w.customerId = {customer_id:String}
+              AND w.customerRef = {customer_id:String}
               AND w.deleted = '0'
               AND wi.deleted = '0'
               AND wi.purchased = '0'
@@ -431,7 +434,7 @@ class ClickHouseProductRepository:
                     imageUrl,
                     url,
                     inStock
-                FROM TWCVARIANT
+                FROM TWCVARIANT FINAL
                 WHERE tenantId = {tenant_id:String}
                   AND variantRef = {product_id:String}
                   AND status = 'active'
@@ -477,7 +480,7 @@ class ClickHouseProductRepository:
                     imageUrl,
                     url,
                     inStock
-                FROM TWCVARIANT
+                FROM TWCVARIANT FINAL
                 WHERE tenantId = {tenant_id:String}
                   AND status = 'active'
                   AND deleted = 0
@@ -520,10 +523,10 @@ class ClickHouseProductRepository:
             attributes=ProductAttributes(
                 category=category,
                 subcategory=sub_category,
+                collection=collection,
                 brand=brand,
                 color=color,
                 colors=[color] if color else [],
-                season=collection,  # Map collection to season field
             ),
             sizing=ProductSizing(
                 available_sizes=[size] if size else [],

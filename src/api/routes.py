@@ -1,12 +1,16 @@
 """API routes for the recommendation service."""
+import os
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from ..models import Customer, Product, ScoredProduct
+from ..models.logging import RecommendationEvent, RecommendationType
 from ..config import RecommendationWeights, DEFAULT_WEIGHTS
+from ..config.clickhouse import get_clickhouse_config
 from ..engine import RecommendationEngine
 from ..data.repository import CustomerRepository, ProductRepository
+from ..data.logging_repository import RecommendationLogRepository
 
 
 router = APIRouter(prefix="/api/v1", tags=["recommendations"])
@@ -15,6 +19,30 @@ router = APIRouter(prefix="/api/v1", tags=["recommendations"])
 customer_repo = CustomerRepository()
 product_repo = ProductRepository()
 engine = RecommendationEngine()
+
+# Initialize logging repository (optional - only if ClickHouse is configured)
+_log_repo: Optional[RecommendationLogRepository] = None
+
+def get_log_repo() -> Optional[RecommendationLogRepository]:
+    """Lazy initialization of logging repository."""
+    global _log_repo
+    if _log_repo is None and os.getenv("CLICKHOUSE_HOST"):
+        _log_repo = RecommendationLogRepository(get_clickhouse_config())
+    return _log_repo
+
+
+def build_context_features(customer: Customer) -> dict:
+    """Build context features dict for logging."""
+    return {
+        "has_preferences": bool(customer.preferences.categories or customer.preferences.colors or customer.preferences.brands),
+        "has_dislikes": bool(customer.dislikes.categories or customer.dislikes.colors or customer.dislikes.brands),
+        "purchase_count": customer.purchase_history.total_purchases,
+        "total_spend": customer.purchase_history.total_spend,
+        "wishlist_count": customer.wishlist.total_wishlisted,
+        "browsing_view_count": customer.browsing.view_count_last_30_days,
+        "has_cart_items": bool(customer.browsing.cart_product_ids),
+        "is_vip": customer.is_vip,
+    }
 
 
 class RecommendationRequest(BaseModel):
@@ -30,6 +58,7 @@ class RecommendationResponse(BaseModel):
     retailer_id: str
     recommendations: list[ScoredProduct]
     weights_used: str  # "default", "new_customer", "custom"
+    event_id: Optional[str] = None  # Recommendation event ID for tracking
 
 
 @router.get("/recommendations/{retailer_id}/{customer_id}")
@@ -71,11 +100,34 @@ async def get_recommendations(
     if customer.purchase_history.total_purchases == 0 and customer.wishlist.total_wishlisted == 0:
         weights_used = "new_customer"
 
+    # Log recommendation event
+    event_id = None
+    log_repo = get_log_repo()
+    if log_repo and recommendations:
+        event = RecommendationEvent(
+            tenant_id=retailer_id,
+            customer_id=customer_id,
+            recommendation_type=RecommendationType.PERSONALIZED,
+            recommended_items=[r.product.product_id for r in recommendations],
+            scores=[r.score for r in recommendations],
+            positions=list(range(1, len(recommendations) + 1)),
+            context_features=build_context_features(customer),
+            model_version="rule-based-v1",
+            weights_config=weights_used,
+        )
+        try:
+            log_repo.log_recommendation(event)
+            event_id = event.event_id
+        except Exception:
+            # Don't fail the request if logging fails
+            pass
+
     return RecommendationResponse(
         customer_id=customer_id,
         retailer_id=retailer_id,
         recommendations=recommendations,
         weights_used=weights_used,
+        event_id=event_id,
     )
 
 
@@ -111,11 +163,36 @@ async def get_recommendations_custom(
         diversity_factor=request.diversity_factor,
     )
 
+    weights_used = "custom" if request.weights else "default"
+
+    # Log recommendation event
+    event_id = None
+    log_repo = get_log_repo()
+    if log_repo and recommendations:
+        event = RecommendationEvent(
+            tenant_id=retailer_id,
+            customer_id=customer_id,
+            recommendation_type=RecommendationType.PERSONALIZED,
+            recommended_items=[r.product.product_id for r in recommendations],
+            scores=[r.score for r in recommendations],
+            positions=list(range(1, len(recommendations) + 1)),
+            context_features=build_context_features(customer),
+            model_version="rule-based-v1",
+            weights_config=weights_used,
+        )
+        try:
+            log_repo.log_recommendation(event)
+            event_id = event.event_id
+        except Exception:
+            # Don't fail the request if logging fails
+            pass
+
     return RecommendationResponse(
         customer_id=customer_id,
         retailer_id=retailer_id,
         recommendations=recommendations,
-        weights_used="custom" if request.weights else "default",
+        weights_used=weights_used,
+        event_id=event_id,
     )
 
 

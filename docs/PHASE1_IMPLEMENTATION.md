@@ -13,26 +13,32 @@ This document covers the setup requirements for Phase 1 of the TWC Recommendatio
 
 These are the **source tables** that the recommendation engine reads from. Most already exist in your ClickHouse instance - verify and create any missing tables.
 
-### 1.1 PREFERENCES
+### 1.1 TWCPREFERENCES
 
 Stores customer preferences entered by staff or customers.
 
 ```sql
-CREATE TABLE IF NOT EXISTS default.PREFERENCES
+CREATE TABLE default.TWCPREFERENCES
 (
     `id` String,
-    `tenantId` String,
     `customerId` String,
+    `customerRef` String,
+    `customerEmail` String,
+    `firstName` String,
+    `lastName` String,
+    `mobile` String,
+    `deleted` String,
+    `isPrimary` String,
+    `prefListName` String,
+    `prefListRef` String,
+    `rangeName` String,
     `preferences` String,  -- JSON containing categories, colours, sizes, etc.
-    `rangeName` Nullable(String),
-    `isPrimary` UInt8 DEFAULT 0,
-    `deleted` String DEFAULT '0',
-    `createdAt` DateTime DEFAULT now(),
-    `updatedAt` DateTime DEFAULT now()
+    `updatedAt` DateTime,
+    `createdAt` DateTime,
+    `tenantId` String
 )
-ENGINE = MergeTree()
-PARTITION BY toYYYYMM(updatedAt)
-ORDER BY (tenantId, customerId, updatedAt)
+ENGINE = SharedReplacingMergeTree('/clickhouse/tables/{uuid}/{shard}', '{replica}')
+ORDER BY (tenantId, rangeName, id)
 SETTINGS index_granularity = 8192;
 ```
 
@@ -56,35 +62,34 @@ SETTINGS index_granularity = 8192;
 
 ---
 
-### 1.2 ALLORDERS
+### 1.2 TWCALLORDERS
 
 Order header information.
 
 ```sql
-CREATE TABLE IF NOT EXISTS default.ALLORDERS
+CREATE TABLE default.TWCALLORDERS
 (
     `orderId` String,
     `tenantId` String,
     `orderRef` String,
     `orderDate` DateTime,
     `customerRef` String,
-    `customerEmail` Nullable(String),
-    `amount` Float32,
-    `storeRef` Nullable(String),
-    `storeName` Nullable(String),
-    `staffRef` Nullable(String),
-    `staffName` Nullable(String),
-    `firstName` Nullable(String),
-    `lastName` Nullable(String),
-    `phone` Nullable(String),
-    `eventType` String DEFAULT 'INSERT',
-    `converted` String DEFAULT '0',
-    `totalItems` UInt32 DEFAULT 0,
-    `updatedAt` DateTime DEFAULT now()
+    `customerEmail` String,
+    `amount` Decimal(10, 0),
+    `storeRef` String,
+    `storeName` String,
+    `staffRef` String,
+    `staffName` String,
+    `firstName` String,
+    `lastName` String,
+    `phone` String,
+    `eventType` String,
+    `converted` String,
+    `totalItems` Int32,
+    `updatedAt` DateTime
 )
-ENGINE = MergeTree()
-PARTITION BY toYYYYMM(orderDate)
-ORDER BY (tenantId, customerRef, orderDate)
+ENGINE = SharedReplacingMergeTree('/clickhouse/tables/{uuid}/{shard}', '{replica}', updatedAt)
+ORDER BY (tenantId, orderId)
 SETTINGS index_granularity = 8192;
 ```
 
@@ -95,24 +100,36 @@ SETTINGS index_granularity = 8192;
 Individual line items within orders.
 
 ```sql
-CREATE TABLE IF NOT EXISTS default.ORDERLINE
+CREATE TABLE default.ORDERLINE
 (
-    `orderLineId` String,
     `tenantId` String,
     `orderId` String,
     `variantRef` String,
-    `customerRef` String,
-    `quantity` UInt32 DEFAULT 1,
-    `unitPrice` Float32,
-    `totalPrice` Float32,
+    `orderRef` String,
     `orderLineDate` DateTime,
+    `parentRef` Nullable(String),
+    `quantity` Int32,
+    `storeRef` String,
+    `storeName` String,
+    `staffRef` String,
+    `staffName` String,
+    `variantName` Nullable(String),
+    `parentName` Nullable(String),
+    `orderLineValue` Float32,  -- Total line value (qty * unit price)
+    `eventType` String,
+    `GTIN` String,
+    `variantImage` String,
+    `customerRef` String,
+    `customerEmail` String,
     `updatedAt` DateTime DEFAULT now()
 )
-ENGINE = MergeTree()
+ENGINE = SharedReplacingMergeTree('/clickhouse/tables/{uuid}/{shard}', '{replica}', updatedAt)
 PARTITION BY toYYYYMM(orderLineDate)
-ORDER BY (tenantId, customerRef, orderLineDate)
+ORDER BY (tenantId, orderId, variantRef)
 SETTINGS index_granularity = 8192;
 ```
+
+**Note:** `orderLineValue` represents the total line value (quantity × unit price). There is no separate `unitPrice` field.
 
 ---
 
@@ -142,7 +159,7 @@ CREATE TABLE default.TWCVARIANT
     `imageUrl` Nullable(String),
     `url` Nullable(String),
     `inStock` UInt8 DEFAULT 1,
-    `status` String,                    -- Variant status (e.g., "in_stock", "out_of_stock")
+    `status` String,
     `deleted` UInt8 DEFAULT 1,
     `createdAt` DateTime DEFAULT now(),
     `updatedAt` DateTime DEFAULT now()
@@ -159,6 +176,7 @@ SETTINGS index_granularity = 8192;
 - `subCategory` - Product subcategory
 - `sizeType` - Size system (e.g., "AU", "US", "EU") - not always populated
 - `tags` - Searchable tags
+- `url` - Product URL on storefront
 
 **Note:** Not all fields are populated for all variants. The API handles null values gracefully.
 
@@ -169,20 +187,31 @@ SETTINGS index_granularity = 8192;
 Wishlist headers.
 
 ```sql
-CREATE TABLE IF NOT EXISTS default.TWCWISHLIST
+CREATE TABLE default.TWCWISHLIST
 (
-    `wishlistId` String,
-    `tenantId` String,
+    `createdAt` DateTime,
     `customerId` String,
-    `name` Nullable(String),
-    `deleted` String DEFAULT '0',
-    `createdAt` DateTime DEFAULT now(),
-    `updatedAt` DateTime DEFAULT now()
+    `customerRef` String,
+    `customerEmail` String,
+    `wishlistId` String,
+    `deleted` String,
+    `tenantId` String,
+    `eventType` String,
+    `wishlistRef` String,
+    `staffRef` String,
+    `locationRef` String,
+    `customerInterest` String,
+    `name` String,
+    `regionRef` String,
+    `updatedAt` DateTime
 )
-ENGINE = MergeTree()
-ORDER BY (tenantId, customerId, wishlistId)
+ENGINE = SharedReplacingMergeTree('/clickhouse/tables/{uuid}/{shard}', '{replica}')
+PARTITION BY toYYYYMM(createdAt)
+ORDER BY (tenantId, wishlistId)
 SETTINGS index_granularity = 8192;
 ```
+
+**Note:** Use `customerRef` to join with other tables (ORDERLINE, TWCCLICKSTREAM, etc.).
 
 ---
 
@@ -191,24 +220,48 @@ SETTINGS index_granularity = 8192;
 Individual wishlist items.
 
 ```sql
-CREATE TABLE IF NOT EXISTS default.WISHLISTITEM
+CREATE TABLE default.WISHLISTITEM
 (
-    `itemId` String,
+    `createdAt` DateTime,
+    `updatedAt` DateTime DEFAULT now(),
     `tenantId` String,
+    `wishlistItemId` String,
     `wishlistId` String,
+    `deleted` String,
     `productRef` String,
-    `variantRef` Nullable(String),
-    `category` Nullable(String),
-    `brandId` Nullable(String),
-    `deleted` String DEFAULT '0',
-    `purchased` String DEFAULT '0',
-    `createdAt` DateTime DEFAULT now(),
-    `updatedAt` DateTime DEFAULT now()
+    `variantRef` String,
+    `gtin` String,
+    `price` Float32,
+    `storeRef` String,
+    `storeName` String,
+    `staffRef` String,
+    `staffName` String,
+    `variantImage` Nullable(String),
+    `eventType` String,
+    `productName` String,
+    `variantName` String,
+    `purchased` String,
+    `preRelease` String,
+    `addedByStaff` String,
+    `customerInterest` String,
+    `notifyMe` String,
+    `brandId` String,
+    `regionRef` String,
+    `notificationTimeSent` String,
+    `noPostStore` String,
+    `category` String
 )
-ENGINE = MergeTree()
-ORDER BY (tenantId, wishlistId, productRef)
+ENGINE = SharedReplacingMergeTree('/clickhouse/tables/{uuid}/{shard}', '{replica}', updatedAt)
+PARTITION BY toYYYYMM(createdAt)
+ORDER BY (tenantId, wishlistItemId, createdAt)
 SETTINGS index_granularity = 8192;
 ```
+
+**Key Fields:**
+- `purchased` - Whether the item has been purchased ('0' or '1')
+- `addedByStaff` - Whether item was added by staff
+- `category` - Product category
+- `brandId` - Brand identifier
 
 ---
 
@@ -217,27 +270,39 @@ SETTINGS index_granularity = 8192;
 Customer browsing behavior.
 
 ```sql
-CREATE TABLE IF NOT EXISTS default.TWCCLICKSTREAM
+CREATE TABLE default.TWCCLICKSTREAM
 (
-    `eventId` String,
-    `tenantId` String,
+    `id` String,
+    `eventType` String,
+    `clientId` String,
     `customerRef` String,
-    `sessionId` Nullable(String),
-    `productRef` Nullable(String),
-    `variantRef` Nullable(String),
-    `productType` Nullable(String),  -- category
-    `brand` Nullable(String),
-    `eventType` String,  -- 'view', 'add_to_cart', 'remove_from_cart', etc.
-    `pageUrl` Nullable(String),
+    `tenantId` String,
+    `shopifyDomain` String,
     `timeStamp` DateTime,
-    `updatedAt` DateTime DEFAULT now()
+    `customerEmail` String,
+    `collectionId` String,
+    `collectionName` String,
+    `productTitle` String,
+    `variantTitle` String,
+    `variantRef` String,
+    `productRef` String,
+    `imageUrl` String,
+    `sku` String,
+    `productType` String,  -- category
+    `url` String,
+    `brand` String
 )
-ENGINE = MergeTree()
-PARTITION BY toYYYYMM(timeStamp)
-ORDER BY (tenantId, customerRef, timeStamp)
-TTL timeStamp + INTERVAL 90 DAY
+ENGINE = SharedMergeTree('/clickhouse/tables/{uuid}/{shard}', '{replica}')
+ORDER BY (tenantId, timeStamp)
 SETTINGS index_granularity = 8192;
 ```
+
+**Key Fields:**
+- `eventType` - Event type (e.g., 'product_view', 'add_to_cart', etc.)
+- `productType` - Product category
+- `brand` - Product brand
+- `collectionName` - Collection the product belongs to
+- `productRef` / `variantRef` - Product and variant identifiers
 
 ---
 
@@ -416,8 +481,8 @@ Find alternatives for all sold-out items in a customer's wishlist.
 Verify existing tables and create any missing base tables in ClickHouse for the recommendation engine.
 
 **Acceptance Criteria:**
-- [ ] PREFERENCES table exists with correct schema
-- [ ] ALLORDERS table exists with correct schema
+- [ ] TWCPREFERENCES table exists with correct schema
+- [ ] TWCALLORDERS table exists with correct schema
 - [ ] ORDERLINE table exists with correct schema
 - [ ] TWCVARIANT table exists with correct schema
 - [ ] TWCWISHLIST table exists with correct schema
@@ -477,8 +542,8 @@ Configure the recommendation service to connect to the production ClickHouse clu
 Verify that customer data flows correctly from source systems to ClickHouse and is readable by the recommendation engine.
 
 **Acceptance Criteria:**
-- [ ] PREFERENCES data syncing from DynamoDB
-- [ ] ALLORDERS data syncing correctly
+- [ ] TWCPREFERENCES data syncing from DynamoDB
+- [ ] TWCALLORDERS data syncing correctly
 - [ ] ORDERLINE data syncing correctly
 - [ ] Customer profile assembles correctly via API
 - [ ] Test with 5 real customer IDs

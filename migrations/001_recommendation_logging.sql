@@ -123,14 +123,14 @@ PARTITION BY toYYYYMM(day)
 ORDER BY (tenantId, modelVersion, outcomeType, day)
 AS
 SELECT
-    l.tenantId,
-    l.modelVersion,
-    l.weightsConfig,
-    o.outcomeType,
-    toDate(o.occurredAt) as day,
-    count() as outcome_count,
-    sum(o.purchaseValue) as total_revenue,
-    uniq(o.recommendationEventId) as unique_recommendations
+    l.tenantId AS tenantId,
+    l.modelVersion AS modelVersion,
+    l.weightsConfig AS weightsConfig,
+    o.outcomeType AS outcomeType,
+    toDate(o.occurredAt) AS day,
+    count() AS outcome_count,
+    sum(o.purchaseValue) AS total_revenue,
+    uniq(o.recommendationEventId) AS unique_recommendations
 FROM default.TWCRECOMMENDATION_OUTCOME o
 JOIN default.TWCRECOMMENDATION_LOG l ON o.recommendationEventId = l.eventId
-GROUP BY l.tenantId, l.modelVersion, l.weightsConfig, o.outcomeType, day;
+GROUP BY tenantId, modelVersion, weightsConfig, outcomeType, day;
