@@ -437,7 +437,6 @@ class ClickHouseProductRepository:
                 FROM TWCVARIANT FINAL
                 WHERE tenantId = {tenant_id:String}
                   AND variantRef = {product_id:String}
-                  AND status = 'active'
                   AND deleted = 0
                 LIMIT 1
             """
@@ -482,7 +481,6 @@ class ClickHouseProductRepository:
                     inStock
                 FROM TWCVARIANT FINAL
                 WHERE tenantId = {tenant_id:String}
-                  AND status = 'active'
                   AND deleted = 0
                 ORDER BY updatedAt DESC
                 LIMIT {limit:UInt32}
