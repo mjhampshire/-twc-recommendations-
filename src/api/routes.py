@@ -9,15 +9,16 @@ from ..models.logging import RecommendationEvent, RecommendationType
 from ..config import RecommendationWeights, DEFAULT_WEIGHTS
 from ..config.clickhouse import get_clickhouse_config
 from ..engine import RecommendationEngine
-from ..data.repository import CustomerRepository, ProductRepository
+from ..data.clickhouse_repository import ClickHouseCustomerRepository, ClickHouseProductRepository
 from ..data.logging_repository import RecommendationLogRepository
 
 
 router = APIRouter(prefix="/api/v1", tags=["recommendations"])
 
 # Initialize repositories and engine
-customer_repo = CustomerRepository()
-product_repo = ProductRepository()
+_clickhouse_config = get_clickhouse_config()
+customer_repo = ClickHouseCustomerRepository(_clickhouse_config)
+product_repo = ClickHouseProductRepository(_clickhouse_config)
 engine = RecommendationEngine()
 
 # Initialize logging repository (optional - only if ClickHouse is configured)
@@ -75,12 +76,12 @@ async def get_recommendations(
     Returns top N personalized product recommendations.
     """
     # Fetch customer profile
-    customer = await customer_repo.get_customer(retailer_id, customer_id)
+    customer = customer_repo.get_customer(retailer_id, customer_id)
     if not customer:
         raise HTTPException(status_code=404, detail=f"Customer {customer_id} not found")
 
     # Fetch product catalog for retailer
-    products = await product_repo.get_products_for_retailer(retailer_id)
+    products = product_repo.get_products_for_retailer(retailer_id)
     if not products:
         raise HTTPException(status_code=404, detail=f"No products found for retailer {retailer_id}")
 
@@ -144,12 +145,12 @@ async def get_recommendations_custom(
     Use this endpoint when you want to override the default weighting strategy.
     """
     # Fetch customer profile
-    customer = await customer_repo.get_customer(retailer_id, customer_id)
+    customer = customer_repo.get_customer(retailer_id, customer_id)
     if not customer:
         raise HTTPException(status_code=404, detail=f"Customer {customer_id} not found")
 
     # Fetch product catalog
-    products = await product_repo.get_products_for_retailer(retailer_id)
+    products = product_repo.get_products_for_retailer(retailer_id)
     if not products:
         raise HTTPException(status_code=404, detail=f"No products found for retailer {retailer_id}")
 
@@ -208,12 +209,12 @@ async def get_similar_products(
     Useful for "you might also like" sections.
     """
     # Fetch the source product
-    source_product = await product_repo.get_product(retailer_id, product_id)
+    source_product = product_repo.get_product(retailer_id, product_id)
     if not source_product:
         raise HTTPException(status_code=404, detail=f"Product {product_id} not found")
 
     # Fetch all products
-    products = await product_repo.get_products_for_retailer(retailer_id)
+    products = product_repo.get_products_for_retailer(retailer_id)
 
     # Simple similarity: same category or brand, excluding the source
     similar = []
@@ -256,12 +257,12 @@ async def get_product_alternatives(
     Returns similar products based on category, brand, style, color, etc.
     """
     # Fetch the sold-out product
-    sold_out_product = await product_repo.get_product(retailer_id, product_id)
+    sold_out_product = product_repo.get_product(retailer_id, product_id)
     if not sold_out_product:
         raise HTTPException(status_code=404, detail=f"Product {product_id} not found")
 
     # Fetch all products
-    products = await product_repo.get_products_for_retailer(retailer_id)
+    products = product_repo.get_products_for_retailer(retailer_id)
 
     # Find alternatives
     alternatives = engine.find_alternatives(sold_out_product, products, n=n)
@@ -290,12 +291,12 @@ async def get_wishlist_alternatives(
     Only includes wishlist items that are currently out of stock.
     """
     # Fetch customer profile
-    customer = await customer_repo.get_customer(retailer_id, customer_id)
+    customer = customer_repo.get_customer(retailer_id, customer_id)
     if not customer:
         raise HTTPException(status_code=404, detail=f"Customer {customer_id} not found")
 
     # Fetch product catalog
-    products = await product_repo.get_products_for_retailer(retailer_id)
+    products = product_repo.get_products_for_retailer(retailer_id)
     if not products:
         raise HTTPException(status_code=404, detail=f"No products found for retailer {retailer_id}")
 
