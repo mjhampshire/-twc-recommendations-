@@ -51,6 +51,8 @@ class RecommendationRequest(BaseModel):
     weights: Optional[RecommendationWeights] = None
     exclude_product_ids: list[str] = []
     diversity_factor: float = 0.3
+    category: Optional[str] = None
+    subcategory: Optional[str] = None
 
 
 class RecommendationResponse(BaseModel):
@@ -68,6 +70,8 @@ async def get_recommendations(
     customer_id: str,
     n: int = Query(default=4, ge=1, le=20),
     exclude: Optional[str] = Query(default=None, description="Comma-separated product IDs to exclude"),
+    category: Optional[str] = Query(default=None, description="Filter to specific category"),
+    subcategory: Optional[str] = Query(default=None, description="Filter to specific subcategory"),
 ) -> RecommendationResponse:
     """
     Get product recommendations for a customer.
@@ -84,6 +88,15 @@ async def get_recommendations(
     products = product_repo.get_products_for_retailer(retailer_id)
     if not products:
         raise HTTPException(status_code=404, detail=f"No products found for retailer {retailer_id}")
+
+    # Filter by category/subcategory if specified
+    if category:
+        products = [p for p in products if p.attributes.category and p.attributes.category.lower() == category.lower()]
+    if subcategory:
+        products = [p for p in products if p.attributes.subcategory and p.attributes.subcategory.lower() == subcategory.lower()]
+
+    if not products:
+        raise HTTPException(status_code=404, detail=f"No products found for the specified category/subcategory")
 
     # Parse exclusions
     exclude_ids = set(exclude.split(",")) if exclude else set()
@@ -153,6 +166,15 @@ async def get_recommendations_custom(
     products = product_repo.get_products_for_retailer(retailer_id)
     if not products:
         raise HTTPException(status_code=404, detail=f"No products found for retailer {retailer_id}")
+
+    # Filter by category/subcategory if specified
+    if request.category:
+        products = [p for p in products if p.attributes.category and p.attributes.category.lower() == request.category.lower()]
+    if request.subcategory:
+        products = [p for p in products if p.attributes.subcategory and p.attributes.subcategory.lower() == request.subcategory.lower()]
+
+    if not products:
+        raise HTTPException(status_code=404, detail=f"No products found for the specified category/subcategory")
 
     # Generate recommendations with custom weights
     recommendations = engine.recommend(
