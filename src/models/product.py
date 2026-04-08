@@ -36,7 +36,8 @@ class ProductMetrics(BaseModel):
 
 class Product(BaseModel):
     """Complete product for recommendations."""
-    product_id: str
+    product_id: str  # variantRef - unique per size/color combination
+    product_ref: Optional[str] = None  # Base product ID - same across all variants
     retailer_id: str
     name: str
     description: Optional[str] = None

@@ -539,6 +539,7 @@ class ClickHouseProductRepository:
 
         return Product(
             product_id=variant_ref,
+            product_ref=product_ref,
             retailer_id=tenant_id,
             name=product_name or "",
             price=float(price or 0),

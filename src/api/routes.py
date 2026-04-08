@@ -51,6 +51,7 @@ class RecommendationRequest(BaseModel):
     weights: Optional[RecommendationWeights] = None
     exclude_product_ids: list[str] = []
     diversity_factor: float = 0.3
+    fill_with_popular: bool = True  # Fill remaining slots with popular items if needed
     category: Optional[str] = None
     subcategory: Optional[str] = None
     collection: Optional[str] = None
@@ -74,6 +75,7 @@ async def get_recommendations(
     category: Optional[str] = Query(default=None, description="Filter to specific category"),
     subcategory: Optional[str] = Query(default=None, description="Filter to specific subcategory"),
     collection: Optional[str] = Query(default=None, description="Filter to products in a specific collection"),
+    fill_with_popular: bool = Query(default=True, description="Fill remaining slots with popular items if personalized recommendations are insufficient"),
 ) -> RecommendationResponse:
     """
     Get product recommendations for a customer.
@@ -108,6 +110,7 @@ async def get_recommendations(
         products=products,
         n=n,
         exclude_product_ids=exclude_ids,
+        fill_with_popular=fill_with_popular,
     )
 
     # Determine which weights were used
@@ -184,6 +187,7 @@ async def get_recommendations_custom(
         weights=request.weights,
         exclude_product_ids=set(request.exclude_product_ids),
         diversity_factor=request.diversity_factor,
+        fill_with_popular=request.fill_with_popular,
     )
 
     weights_used = "custom" if request.weights else "default"

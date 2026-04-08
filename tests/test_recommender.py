@@ -345,5 +345,401 @@ class TestPreferenceSource:
         assert scored.score_breakdown.get('preference_color', 0) > 0
 
 
+class TestPopularityFallback:
+    """Test popularity fallback when personalized recommendations are insufficient."""
+
+    def test_fills_with_popular_when_insufficient_personalized(self):
+        """Should fill remaining slots with popular items when personalized results are few."""
+        # Customer with preferences that match only one product well
+        customer = Customer(
+            customer_id="test_fallback",
+            retailer_id="test_retailer",
+            preferences=CustomerPreferences(
+                categories=[pref("Dresses")],
+                colors=[pref("Navy")],
+                brands=[pref("BrandA")],
+            ),
+        )
+
+        products = [
+            # This one matches preferences well
+            Product(
+                product_id="p_match",
+                product_ref="base_match",
+                retailer_id="test_retailer",
+                name="Navy Dress by BrandA",
+                price=100,
+                attributes=ProductAttributes(category="Dresses", color="Navy", brand="BrandA"),
+                metrics=ProductMetrics(total_purchases=10),
+            ),
+            # These are popular but don't match preferences
+            Product(
+                product_id="p_popular1",
+                product_ref="base_pop1",
+                retailer_id="test_retailer",
+                name="Popular Item 1",
+                price=100,
+                attributes=ProductAttributes(category="Shoes", color="Red", brand="OtherBrand"),
+                metrics=ProductMetrics(total_purchases=500, trending_score=0.8),
+            ),
+            Product(
+                product_id="p_popular2",
+                product_ref="base_pop2",
+                retailer_id="test_retailer",
+                name="Popular Item 2",
+                price=100,
+                attributes=ProductAttributes(category="Bags", color="Black", brand="OtherBrand2"),
+                metrics=ProductMetrics(total_purchases=300),
+            ),
+        ]
+
+        engine = RecommendationEngine(min_score_threshold=0.1)
+        recs = engine.recommend(customer, products, n=3, fill_with_popular=True)
+
+        # Should get 3 results: 1 personalized + 2 popular fallback
+        assert len(recs) == 3
+        # First should be the personalized match (highest personalized score)
+        assert recs[0].product.product_id == "p_match"
+        # Remaining should be popular items
+        fallback_ids = {r.product.product_id for r in recs[1:]}
+        assert "p_popular1" in fallback_ids or "p_popular2" in fallback_ids
+
+    def test_no_fallback_when_disabled(self):
+        """Should not fill with popular items when fill_with_popular=False."""
+        customer = Customer(
+            customer_id="test_fallback",
+            retailer_id="test_retailer",
+            preferences=CustomerPreferences(
+                categories=[pref("Dresses")],
+                colors=[pref("Navy")],
+                brands=[pref("BrandA")],
+            ),
+        )
+
+        products = [
+            Product(
+                product_id="p_match",
+                product_ref="base_match",
+                retailer_id="test_retailer",
+                name="Navy Dress by BrandA",
+                price=100,
+                attributes=ProductAttributes(category="Dresses", color="Navy", brand="BrandA"),
+            ),
+            Product(
+                product_id="p_popular",
+                product_ref="base_pop",
+                retailer_id="test_retailer",
+                name="Popular Item",
+                price=100,
+                attributes=ProductAttributes(category="Shoes", color="Red"),
+                metrics=ProductMetrics(total_purchases=500),
+            ),
+        ]
+
+        engine = RecommendationEngine(min_score_threshold=0.1)
+        recs = engine.recommend(customer, products, n=3, fill_with_popular=False)
+
+        # Should only get the personalized result, not filled with popular
+        assert len(recs) == 1
+        assert recs[0].product.product_id == "p_match"
+
+    def test_fallback_respects_deduplication(self):
+        """Fallback should not include variants of products already in results."""
+        customer = Customer(
+            customer_id="test_fallback",
+            retailer_id="test_retailer",
+            preferences=CustomerPreferences(
+                categories=[pref("Tops")],
+                colors=[pref("Navy")],
+                brands=[pref("BrandA")],
+            ),
+        )
+
+        products = [
+            # This matches preferences well
+            Product(
+                product_id="v1_navy_m",
+                product_ref="base1",
+                retailer_id="test_retailer",
+                name="Top - Navy M",
+                price=100,
+                attributes=ProductAttributes(category="Tops", color="Navy", brand="BrandA"),
+            ),
+            # Same product, different size - should not appear in fallback
+            Product(
+                product_id="v1_navy_l",
+                product_ref="base1",
+                retailer_id="test_retailer",
+                name="Top - Navy L",
+                price=100,
+                attributes=ProductAttributes(category="Tops", color="Navy", brand="BrandA"),
+                metrics=ProductMetrics(total_purchases=1000),  # Very popular
+            ),
+            # Different product - can appear in fallback
+            Product(
+                product_id="v2",
+                product_ref="base2",
+                retailer_id="test_retailer",
+                name="Other Top",
+                price=100,
+                attributes=ProductAttributes(category="Tops", color="Red", brand="OtherBrand"),
+                metrics=ProductMetrics(total_purchases=50),
+            ),
+        ]
+
+        engine = RecommendationEngine(min_score_threshold=0.1)
+        recs = engine.recommend(customer, products, n=2, fill_with_popular=True)
+
+        # Should get 2: personalized navy + fallback other (not navy L variant)
+        assert len(recs) == 2
+        product_ids = {r.product.product_id for r in recs}
+        # One of the navy variants should be there (they're deduplicated)
+        assert "v1_navy_m" in product_ids or "v1_navy_l" in product_ids
+        # The other product should fill the second slot
+        assert "v2" in product_ids
+        # Both navy variants should NOT both be there
+        assert not ("v1_navy_m" in product_ids and "v1_navy_l" in product_ids)
+
+
+class TestVariantDeduplication:
+    """Test variant deduplication logic."""
+
+    def test_same_product_same_color_different_sizes_deduplicated(self):
+        """Same product+color in multiple sizes should return only one."""
+        customer = Customer(
+            customer_id="test_dedupe",
+            retailer_id="test_retailer",
+            preferences=CustomerPreferences(
+                categories=[pref("Tops")],
+                colors=[pref("Navy")],
+            ),
+        )
+
+        # Same product (product_ref=base1) in 3 sizes, same color
+        products = [
+            Product(
+                product_id="v1_s",
+                product_ref="base1",
+                retailer_id="test_retailer",
+                name="Navy Top - Small",
+                price=100,
+                attributes=ProductAttributes(category="Tops", color="Navy"),
+            ),
+            Product(
+                product_id="v1_m",
+                product_ref="base1",
+                retailer_id="test_retailer",
+                name="Navy Top - Medium",
+                price=100,
+                attributes=ProductAttributes(category="Tops", color="Navy"),
+            ),
+            Product(
+                product_id="v1_l",
+                product_ref="base1",
+                retailer_id="test_retailer",
+                name="Navy Top - Large",
+                price=100,
+                attributes=ProductAttributes(category="Tops", color="Navy"),
+            ),
+        ]
+
+        engine = RecommendationEngine(min_score_threshold=0)
+        recs = engine.recommend(customer, products, n=3)
+
+        # Should only get 1 recommendation (all are same product+color)
+        assert len(recs) == 1
+
+    def test_same_product_different_colors_with_affinity_kept(self):
+        """Same product in different colors should be kept if customer has affinity for both."""
+        customer = Customer(
+            customer_id="test_dedupe",
+            retailer_id="test_retailer",
+            preferences=CustomerPreferences(
+                categories=[pref("Tops")],
+                colors=[pref("Navy"), pref("Black")],  # Has affinity for both
+            ),
+        )
+
+        products = [
+            Product(
+                product_id="v1_navy",
+                product_ref="base1",
+                retailer_id="test_retailer",
+                name="Top - Navy",
+                price=100,
+                attributes=ProductAttributes(category="Tops", color="Navy"),
+            ),
+            Product(
+                product_id="v1_black",
+                product_ref="base1",
+                retailer_id="test_retailer",
+                name="Top - Black",
+                price=100,
+                attributes=ProductAttributes(category="Tops", color="Black"),
+            ),
+        ]
+
+        engine = RecommendationEngine(min_score_threshold=0)
+        recs = engine.recommend(customer, products, n=3)
+
+        # Should get both colors since customer has affinity for both
+        assert len(recs) == 2
+        colors = {r.product.attributes.color for r in recs}
+        assert colors == {"Navy", "Black"}
+
+    def test_same_product_different_colors_without_affinity_one_kept(self):
+        """Same product in different colors without affinity should only keep highest scoring."""
+        customer = Customer(
+            customer_id="test_dedupe",
+            retailer_id="test_retailer",
+            preferences=CustomerPreferences(
+                categories=[pref("Tops")],
+                colors=[pref("Navy")],  # Only has affinity for Navy
+            ),
+        )
+
+        products = [
+            Product(
+                product_id="v1_navy",
+                product_ref="base1",
+                retailer_id="test_retailer",
+                name="Top - Navy",
+                price=100,
+                attributes=ProductAttributes(category="Tops", color="Navy"),
+            ),
+            Product(
+                product_id="v1_red",
+                product_ref="base1",
+                retailer_id="test_retailer",
+                name="Top - Red",
+                price=100,
+                attributes=ProductAttributes(category="Tops", color="Red"),
+            ),
+        ]
+
+        engine = RecommendationEngine(min_score_threshold=0)
+        recs = engine.recommend(customer, products, n=3)
+
+        # Should only get Navy (has affinity) - Red should be deduplicated
+        assert len(recs) == 1
+        assert recs[0].product.attributes.color == "Navy"
+
+    def test_purchase_history_color_creates_affinity(self):
+        """Colors from purchase history should create affinity."""
+        customer = Customer(
+            customer_id="test_dedupe",
+            retailer_id="test_retailer",
+            preferences=CustomerPreferences(
+                categories=[pref("Tops")],
+            ),
+            purchase_history=PurchaseHistory(
+                total_purchases=5,
+                top_colors=["Red", "Navy"],  # Has purchased these colors
+            ),
+        )
+
+        products = [
+            Product(
+                product_id="v1_navy",
+                product_ref="base1",
+                retailer_id="test_retailer",
+                name="Top - Navy",
+                price=100,
+                attributes=ProductAttributes(category="Tops", color="Navy"),
+            ),
+            Product(
+                product_id="v1_red",
+                product_ref="base1",
+                retailer_id="test_retailer",
+                name="Top - Red",
+                price=100,
+                attributes=ProductAttributes(category="Tops", color="Red"),
+            ),
+        ]
+
+        engine = RecommendationEngine(min_score_threshold=0)
+        recs = engine.recommend(customer, products, n=3)
+
+        # Should get both colors since customer has purchased both
+        assert len(recs) == 2
+
+    def test_wishlist_color_creates_affinity(self):
+        """Colors from wishlist should create affinity."""
+        customer = Customer(
+            customer_id="test_dedupe",
+            retailer_id="test_retailer",
+            preferences=CustomerPreferences(
+                categories=[pref("Tops")],
+            ),
+            wishlist=WishlistSummary(
+                total_wishlisted=3,
+                wishlist_colors=["Green"],  # Has wishlisted green items
+            ),
+        )
+
+        products = [
+            Product(
+                product_id="v1_green",
+                product_ref="base1",
+                retailer_id="test_retailer",
+                name="Top - Green",
+                price=100,
+                attributes=ProductAttributes(category="Tops", color="Green"),
+            ),
+            Product(
+                product_id="v1_blue",
+                product_ref="base1",
+                retailer_id="test_retailer",
+                name="Top - Blue",
+                price=100,
+                attributes=ProductAttributes(category="Tops", color="Blue"),
+            ),
+        ]
+
+        engine = RecommendationEngine(min_score_threshold=0)
+        recs = engine.recommend(customer, products, n=3)
+
+        # Should only get Green (from wishlist affinity)
+        # Blue has no affinity so only highest scorer per product_ref is kept
+        assert len(recs) == 1
+        assert recs[0].product.attributes.color == "Green"
+
+    def test_different_products_not_deduplicated(self):
+        """Different products (different product_ref) should not be deduplicated."""
+        customer = Customer(
+            customer_id="test_dedupe",
+            retailer_id="test_retailer",
+            preferences=CustomerPreferences(
+                categories=[pref("Tops")],
+                colors=[pref("Navy")],
+            ),
+        )
+
+        products = [
+            Product(
+                product_id="v1",
+                product_ref="base1",
+                retailer_id="test_retailer",
+                name="Top A - Navy",
+                price=100,
+                attributes=ProductAttributes(category="Tops", color="Navy"),
+            ),
+            Product(
+                product_id="v2",
+                product_ref="base2",  # Different product
+                retailer_id="test_retailer",
+                name="Top B - Navy",
+                price=100,
+                attributes=ProductAttributes(category="Tops", color="Navy"),
+            ),
+        ]
+
+        engine = RecommendationEngine(min_score_threshold=0)
+        recs = engine.recommend(customer, products, n=3)
+
+        # Should get both - they're different products
+        assert len(recs) == 2
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
