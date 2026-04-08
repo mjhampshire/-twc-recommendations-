@@ -86,23 +86,18 @@ async def get_recommendations(
     if not customer:
         raise HTTPException(status_code=404, detail=f"Customer {customer_id} not found")
 
-    # Fetch product catalog for retailer
-    products = product_repo.get_products_for_retailer(retailer_id)
+    # Fetch product catalog for retailer (with optional filters pushed to DB)
+    products = product_repo.get_products_for_retailer(
+        retailer_id,
+        category=category,
+        subcategory=subcategory,
+        collection=collection,
+    )
     if not products:
-        raise HTTPException(status_code=404, detail=f"No products found for retailer {retailer_id}")
-
-    # Filter by category/subcategory/collection if specified
-    if category:
-        products = [p for p in products if p.attributes.category and p.attributes.category.lower() == category.lower()]
-    if subcategory:
-        products = [p for p in products if p.attributes.subcategory and p.attributes.subcategory.lower() == subcategory.lower()]
-    if collection:
-        # Collection is a comma-separated string, check if requested collection is in the list
-        collection_lower = collection.lower()
-        products = [p for p in products if p.attributes.collection and collection_lower in p.attributes.collection.lower()]
-
-    if not products:
-        raise HTTPException(status_code=404, detail=f"No products found for the specified filters")
+        detail = f"No products found for retailer {retailer_id}"
+        if category or subcategory or collection:
+            detail = "No products found for the specified filters"
+        raise HTTPException(status_code=404, detail=detail)
 
     # Parse exclusions
     exclude_ids = set(exclude.split(",")) if exclude else set()
@@ -168,22 +163,18 @@ async def get_recommendations_custom(
     if not customer:
         raise HTTPException(status_code=404, detail=f"Customer {customer_id} not found")
 
-    # Fetch product catalog
-    products = product_repo.get_products_for_retailer(retailer_id)
+    # Fetch product catalog (with optional filters pushed to DB)
+    products = product_repo.get_products_for_retailer(
+        retailer_id,
+        category=request.category,
+        subcategory=request.subcategory,
+        collection=request.collection,
+    )
     if not products:
-        raise HTTPException(status_code=404, detail=f"No products found for retailer {retailer_id}")
-
-    # Filter by category/subcategory/collection if specified
-    if request.category:
-        products = [p for p in products if p.attributes.category and p.attributes.category.lower() == request.category.lower()]
-    if request.subcategory:
-        products = [p for p in products if p.attributes.subcategory and p.attributes.subcategory.lower() == request.subcategory.lower()]
-    if request.collection:
-        collection_lower = request.collection.lower()
-        products = [p for p in products if p.attributes.collection and collection_lower in p.attributes.collection.lower()]
-
-    if not products:
-        raise HTTPException(status_code=404, detail=f"No products found for the specified filters")
+        detail = f"No products found for retailer {retailer_id}"
+        if request.category or request.subcategory or request.collection:
+            detail = "No products found for the specified filters"
+        raise HTTPException(status_code=404, detail=detail)
 
     # Generate recommendations with custom weights
     recommendations = engine.recommend(

@@ -457,12 +457,42 @@ class ClickHouseProductRepository:
         self,
         tenant_id: str,
         limit: int = 1000,
+        category: Optional[str] = None,
+        subcategory: Optional[str] = None,
+        collection: Optional[str] = None,
     ) -> list[Product]:
-        """Fetch all active products for a retailer."""
+        """Fetch products for a retailer with optional filters.
+
+        Args:
+            tenant_id: The retailer/tenant ID
+            limit: Maximum products to return
+            category: Filter by exact category match (case-insensitive)
+            subcategory: Filter by exact subcategory match (case-insensitive)
+            collection: Filter by collection (substring match in comma-separated list)
+        """
         client = _get_client(self.config)
 
         try:
-            query = """
+            # Build dynamic WHERE clause
+            where_clauses = [
+                "tenantId = {tenant_id:String}",
+                "deleted = 0",
+            ]
+            parameters = {"tenant_id": tenant_id, "limit": limit}
+
+            if category:
+                where_clauses.append("lower(category) = {category:String}")
+                parameters["category"] = category.lower()
+
+            if subcategory:
+                where_clauses.append("lower(subCategory) = {subcategory:String}")
+                parameters["subcategory"] = subcategory.lower()
+
+            if collection:
+                where_clauses.append("lower(collection) LIKE {collection_pattern:String}")
+                parameters["collection_pattern"] = f"%{collection.lower()}%"
+
+            query = f"""
                 SELECT
                     productRef,
                     variantRef,
@@ -480,16 +510,12 @@ class ClickHouseProductRepository:
                     url,
                     inStock
                 FROM TWCVARIANT FINAL
-                WHERE tenantId = {tenant_id:String}
-                  AND deleted = 0
+                WHERE {' AND '.join(where_clauses)}
                 ORDER BY updatedAt DESC
-                LIMIT {limit:UInt32}
+                LIMIT {{limit:UInt32}}
             """
 
-            result = client.query(
-                query,
-                parameters={"tenant_id": tenant_id, "limit": limit}
-            )
+            result = client.query(query, parameters=parameters)
 
             return [self._row_to_product(tenant_id, row) for row in result.result_rows]
         finally:
