@@ -39,6 +39,13 @@ class ClickHouseCustomerRepository:
     def __init__(self, config: ClickHouseConfig):
         self.config = config
 
+    def _get_customer_lookup_field(self, customer_id: str) -> str:
+        """Determine lookup field based on customer_id format.
+
+        Returns 'customerEmail' if customer_id contains '@', otherwise 'customerRef'.
+        """
+        return 'customerEmail' if '@' in customer_id else 'customerRef'
+
     def get_customer(self, tenant_id: str, customer_id: str) -> Optional[Customer]:
         """
         Fetch and assemble a complete customer profile.
@@ -53,11 +60,14 @@ class ClickHouseCustomerRepository:
         client = _get_client(self.config)
 
         try:
+            # Determine lookup field based on customer_id format
+            lookup_field = self._get_customer_lookup_field(customer_id)
+
             # Fetch all data in parallel (ClickHouse is fast)
-            preferences_data = self._fetch_preferences(client, tenant_id, customer_id)
-            purchase_data = self._fetch_purchase_history(client, tenant_id, customer_id)
-            wishlist_data = self._fetch_wishlist(client, tenant_id, customer_id)
-            browsing_data = self._fetch_browsing(client, tenant_id, customer_id)
+            preferences_data = self._fetch_preferences(client, tenant_id, customer_id, lookup_field)
+            purchase_data = self._fetch_purchase_history(client, tenant_id, customer_id, lookup_field)
+            wishlist_data = self._fetch_wishlist(client, tenant_id, customer_id, lookup_field)
+            browsing_data = self._fetch_browsing(client, tenant_id, customer_id, lookup_field)
 
             if not preferences_data and not purchase_data and not wishlist_data:
                 # Customer not found in any table
@@ -81,18 +91,18 @@ class ClickHouseCustomerRepository:
         finally:
             client.close()
 
-    def _fetch_preferences(self, client, tenant_id: str, customer_id: str) -> Optional[dict]:
+    def _fetch_preferences(self, client, tenant_id: str, customer_id: str, lookup_field: str) -> Optional[dict]:
         """Fetch customer preferences from preferences table."""
         # Get the primary preference (isPrimary=1) or most recent
-        query = """
+        query = f"""
             SELECT
                 customerId,
                 preferences,
                 rangeName,
                 updatedAt
             FROM TWCPREFERENCES FINAL
-            WHERE tenantId = {tenant_id:String}
-              AND customerRef = {customer_id:String}
+            WHERE tenantId = {{tenant_id:String}}
+              AND {lookup_field} = {{customer_id:String}}
               AND deleted = '0'
             ORDER BY isPrimary DESC, updatedAt DESC
             LIMIT 1
@@ -114,18 +124,18 @@ class ClickHouseCustomerRepository:
             "updated_at": row[3],
         }
 
-    def _fetch_purchase_history(self, client, tenant_id: str, customer_id: str) -> PurchaseHistory:
+    def _fetch_purchase_history(self, client, tenant_id: str, customer_id: str, lookup_field: str) -> PurchaseHistory:
         """Fetch and aggregate purchase history."""
         # Aggregate order stats
-        stats_query = """
+        stats_query = f"""
             SELECT
                 count(DISTINCT o.orderId) as total_orders,
                 sum(o.amount) as total_spend,
                 avg(o.amount) as avg_order_value,
                 max(o.orderDate) as last_purchase_date
             FROM TWCALLORDERS o FINAL
-            WHERE o.tenantId = {tenant_id:String}
-              AND o.customerRef = {customer_id:String}
+            WHERE o.tenantId = {{tenant_id:String}}
+              AND o.{lookup_field} = {{customer_id:String}}
               AND o.eventType != 'DELETE'
         """
 
@@ -144,7 +154,7 @@ class ClickHouseCustomerRepository:
         last_purchase = stats[3]
 
         # Get top categories and brands from order lines joined to products
-        top_query = """
+        top_query = f"""
             SELECT
                 p.category,
                 p.brand,
@@ -152,8 +162,8 @@ class ClickHouseCustomerRepository:
                 count(*) as cnt
             FROM ORDERLINE ol FINAL
             JOIN TWCVARIANT p FINAL ON ol.variantRef = p.variantRef AND ol.tenantId = p.tenantId
-            WHERE ol.tenantId = {tenant_id:String}
-              AND ol.customerRef = {customer_id:String}
+            WHERE ol.tenantId = {{tenant_id:String}}
+              AND ol.{lookup_field} = {{customer_id:String}}
               AND ol.eventType != 'DELETE'
             GROUP BY p.category, p.brand, p.color
             ORDER BY cnt DESC
@@ -184,11 +194,11 @@ class ClickHouseCustomerRepository:
         top_colors = sorted(color_counts.keys(), key=lambda x: color_counts[x], reverse=True)[:5]
 
         # Get recent product IDs
-        recent_query = """
+        recent_query = f"""
             SELECT DISTINCT ol.variantRef
             FROM ORDERLINE ol FINAL
-            WHERE ol.tenantId = {tenant_id:String}
-              AND ol.customerRef = {customer_id:String}
+            WHERE ol.tenantId = {{tenant_id:String}}
+              AND ol.{lookup_field} = {{customer_id:String}}
               AND ol.eventType != 'DELETE'
             ORDER BY ol.orderLineDate DESC
             LIMIT 10
@@ -211,17 +221,17 @@ class ClickHouseCustomerRepository:
             recent_product_ids=recent_product_ids,
         )
 
-    def _fetch_wishlist(self, client, tenant_id: str, customer_id: str) -> WishlistSummary:
+    def _fetch_wishlist(self, client, tenant_id: str, customer_id: str, lookup_field: str) -> WishlistSummary:
         """Fetch wishlist summary."""
-        query = """
+        query = f"""
             SELECT
                 wi.productRef,
                 wi.category,
                 wi.brandId
             FROM TWCWISHLIST w FINAL
             JOIN WISHLISTITEM wi FINAL ON w.wishlistId = wi.wishlistId AND w.tenantId = wi.tenantId
-            WHERE w.tenantId = {tenant_id:String}
-              AND w.customerRef = {customer_id:String}
+            WHERE w.tenantId = {{tenant_id:String}}
+              AND w.{lookup_field} = {{customer_id:String}}
               AND w.deleted = '0'
               AND wi.deleted = '0'
               AND wi.purchased = '0'
@@ -256,12 +266,12 @@ class ClickHouseCustomerRepository:
             wishlist_colors=[],  # Would need product join for colors
         )
 
-    def _fetch_browsing(self, client, tenant_id: str, customer_id: str) -> BrowsingBehavior:
+    def _fetch_browsing(self, client, tenant_id: str, customer_id: str, lookup_field: str) -> BrowsingBehavior:
         """Fetch browsing behavior from clickstream."""
         # Last 30 days of browsing
         cutoff_date = datetime.now() - timedelta(days=30)
 
-        query = """
+        query = f"""
             SELECT
                 productRef,
                 productType,
@@ -269,9 +279,9 @@ class ClickHouseCustomerRepository:
                 eventType,
                 timeStamp
             FROM TWCCLICKSTREAM
-            WHERE tenantId = {tenant_id:String}
-              AND customerRef = {customer_id:String}
-              AND timeStamp >= {cutoff:DateTime}
+            WHERE tenantId = {{tenant_id:String}}
+              AND {lookup_field} = {{customer_id:String}}
+              AND timeStamp >= {{cutoff:DateTime}}
             ORDER BY timeStamp DESC
             LIMIT 500
         """
