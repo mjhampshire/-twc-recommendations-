@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: twc-recommendations-config
+  namespace: recommendations
+data:
+  # Update these values for your environment
+  CLICKHOUSE_HOST: "clickhouse.twc.internal"
+  CLICKHOUSE_PORT: "8443"
+  CLICKHOUSE_DATABASE: "default"
+  CLICKHOUSE_SECURE: "true"
+  CLICKHOUSE_USER: "recommendations_ro"
+  LOG_LEVEL: "INFO"
