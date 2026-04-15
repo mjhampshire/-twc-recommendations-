@@ -4,8 +4,7 @@ metadata:
   name: twc-recommendations
   namespace: recommendations
   annotations:
-    kubernetes.io/ingress.class: alb
-    alb.ingress.kubernetes.io/scheme: internal
+    alb.ingress.kubernetes.io/scheme: internet-facing
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/healthcheck-path: /api/v1/health
     alb.ingress.kubernetes.io/healthcheck-interval-seconds: "30"
@@ -13,11 +12,10 @@ metadata:
     alb.ingress.kubernetes.io/unhealthy-threshold-count: "3"
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
     alb.ingress.kubernetes.io/ssl-redirect: "443"
-    # UPDATE: Replace with your ACM certificate ARN
-    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:ap-southeast-2:123456789012:certificate/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:ap-southeast-2:563515687788:certificate/5e60b630-ef93-4329-a86d-d76188c26ef8
 spec:
+  ingressClassName: alb
   rules:
-    # UPDATE: Replace with your internal domain
     - host: recommendations.au-aws.thewishlist.io
       http:
         paths:
