@@ -57,6 +57,19 @@ class RecommendationRequest(BaseModel):
     collection: Optional[str] = None
 
 
+class CategoryItem(BaseModel):
+    """A category with its subcategories and product count."""
+    name: str
+    subcategories: list[str]
+    product_count: int
+
+
+class CategoriesResponse(BaseModel):
+    """Response containing categories for a retailer."""
+    retailer_id: str
+    categories: list[CategoryItem]
+
+
 class RecommendationResponse(BaseModel):
     """Response containing recommendations."""
     customer_id: str
@@ -64,6 +77,27 @@ class RecommendationResponse(BaseModel):
     recommendations: list[ScoredProduct]
     weights_used: str  # "default", "new_customer", "custom"
     event_id: Optional[str] = None  # Recommendation event ID for tracking
+
+
+@router.get("/categories/{retailer_id}")
+async def get_categories(
+    retailer_id: str,
+) -> CategoriesResponse:
+    """
+    Get all categories for a retailer.
+
+    Returns categories with their subcategories and product counts.
+    Useful for populating category filter dropdowns in the UI.
+    """
+    categories = product_repo.get_categories_for_retailer(retailer_id)
+
+    if not categories:
+        raise HTTPException(status_code=404, detail=f"No categories found for retailer {retailer_id}")
+
+    return CategoriesResponse(
+        retailer_id=retailer_id,
+        categories=[CategoryItem(**cat) for cat in categories],
+    )
 
 
 @router.get("/recommendations/{retailer_id}/{customer_id}")

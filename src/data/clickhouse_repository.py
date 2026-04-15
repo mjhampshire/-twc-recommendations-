@@ -531,6 +531,62 @@ class ClickHouseProductRepository:
         finally:
             client.close()
 
+    def get_categories_for_retailer(self, tenant_id: str) -> list[dict]:
+        """Fetch distinct categories and subcategories for a retailer.
+
+        Returns a list of category dicts with structure:
+        {
+            "name": "Dresses",
+            "subcategories": ["Midi Dresses", "Evening Dresses", ...],
+            "product_count": 45
+        }
+        """
+        client = _get_client(self.config)
+
+        try:
+            query = """
+                SELECT
+                    category,
+                    subCategory,
+                    count(*) as product_count
+                FROM TWCVARIANT FINAL
+                WHERE tenantId = {tenant_id:String}
+                  AND deleted = 0
+                  AND category IS NOT NULL
+                  AND category != ''
+                GROUP BY category, subCategory
+                ORDER BY category, subCategory
+            """
+
+            result = client.query(query, parameters={"tenant_id": tenant_id})
+
+            # Aggregate into category -> subcategories structure
+            categories_map: dict[str, dict] = {}
+
+            for row in result.result_rows:
+                category, subcategory, count = row
+
+                if category not in categories_map:
+                    categories_map[category] = {
+                        "name": category,
+                        "subcategories": [],
+                        "product_count": 0,
+                    }
+
+                categories_map[category]["product_count"] += count
+
+                if subcategory and subcategory not in categories_map[category]["subcategories"]:
+                    categories_map[category]["subcategories"].append(subcategory)
+
+            # Sort subcategories alphabetically
+            for cat_data in categories_map.values():
+                cat_data["subcategories"].sort()
+
+            # Return sorted by category name
+            return sorted(categories_map.values(), key=lambda x: x["name"])
+        finally:
+            client.close()
+
     def _row_to_product(self, tenant_id: str, row: tuple) -> Product:
         """Convert a database row to a Product model."""
         (
