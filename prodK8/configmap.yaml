@@ -4,10 +4,9 @@ metadata:
   name: twc-recommendations-config
   namespace: recommendations
 data:
-  # Update these values for your environment
-  CLICKHOUSE_HOST: "clickhouse.twc.internal"
+  CLICKHOUSE_HOST: "mkiam5ktvm.ap-southeast-2.aws.clickhouse.cloud"
   CLICKHOUSE_PORT: "8443"
   CLICKHOUSE_DATABASE: "default"
   CLICKHOUSE_SECURE: "true"
-  CLICKHOUSE_USER: "recommendations_ro"
+  CLICKHOUSE_USER: "default"
   LOG_LEVEL: "INFO"
