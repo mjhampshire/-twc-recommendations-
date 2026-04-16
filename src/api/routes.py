@@ -91,9 +91,6 @@ async def get_categories(
     """
     categories = product_repo.get_categories_for_retailer(retailer_id)
 
-    if not categories:
-        raise HTTPException(status_code=404, detail=f"No categories found for retailer {retailer_id}")
-
     return CategoriesResponse(
         retailer_id=retailer_id,
         categories=[CategoryItem(**cat) for cat in categories],
