@@ -78,12 +78,15 @@ class RecommendationLogRepository:
                     json.dumps(event.context_features),
                     event.model_version,
                     event.weights_config or "",
+                    event.ab_test_id or "",
+                    event.ab_test_variant or "",
                     event.recommended_at,
                 ]],
                 column_names=[
                     "eventId", "tenantId", "customerId", "staffId", "sessionId",
                     "recommendationType", "recommendedItems", "scores", "positions",
-                    "contextFeatures", "modelVersion", "weightsConfig", "recommendedAt"
+                    "contextFeatures", "modelVersion", "weightsConfig",
+                    "abTestId", "abTestVariant", "recommendedAt"
                 ]
             )
         finally:

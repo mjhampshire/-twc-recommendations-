@@ -17,7 +17,15 @@ from .logging import (
     RecommendationType,
     OutcomeType,
     OutcomeActor,
+)
+from .ab_test import (
+    ABTestAssignment,
     ABTestConfig,
+    ABTestMetrics,
+    ABTestResults,
+    TenantWeights,
+    TenantConfig,
+    WeightPreset,
 )
 
 __all__ = [
@@ -43,5 +51,12 @@ __all__ = [
     "RecommendationType",
     "OutcomeType",
     "OutcomeActor",
+    # A/B test models
+    "ABTestAssignment",
     "ABTestConfig",
+    "ABTestMetrics",
+    "ABTestResults",
+    "TenantWeights",
+    "TenantConfig",
+    "WeightPreset",
 ]

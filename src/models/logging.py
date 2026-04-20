@@ -69,6 +69,10 @@ class RecommendationEvent(BaseModel):
     model_version: str = "rule-based-v1"
     weights_config: Optional[str] = None  # Name of weights preset used
 
+    # A/B test tracking
+    ab_test_id: Optional[str] = None  # ID of active A/B test
+    ab_test_variant: Optional[str] = None  # "control" or "treatment"
+
     # Timing
     recommended_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -169,28 +173,3 @@ class RecommendationMetrics(BaseModel):
         return self.total_revenue / self.total_recommendations
 
 
-class ABTestConfig(BaseModel):
-    """
-    Configuration for an A/B test comparing recommendation approaches.
-    """
-    test_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    tenant_id: str
-    name: str
-    description: str
-
-    # Variants
-    control_model_version: str
-    control_weights: Optional[str] = None
-
-    treatment_model_version: str
-    treatment_weights: Optional[str] = None
-
-    # Traffic allocation (percentage to treatment)
-    traffic_percentage: float = 50.0
-
-    # Timing
-    start_date: datetime
-    end_date: Optional[datetime] = None
-
-    # Status
-    is_active: bool = True

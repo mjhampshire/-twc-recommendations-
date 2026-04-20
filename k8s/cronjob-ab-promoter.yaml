@@ -1,0 +1,64 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ab-test-promoter
+  namespace: recommendations
+  labels:
+    app: twc-recommendations
+    component: ab-test-promoter
+spec:
+  # Run every hour at minute 0
+  schedule: "0 * * * *"
+  # Keep 3 successful job runs for debugging
+  successfulJobsHistoryLimit: 3
+  # Keep 1 failed job run for debugging
+  failedJobsHistoryLimit: 1
+  # Don't run concurrent jobs
+  concurrencyPolicy: Forbid
+  # Start the job even if missed (up to 100 seconds late)
+  startingDeadlineSeconds: 100
+  jobTemplate:
+    spec:
+      # Auto-cleanup completed jobs after 1 hour
+      ttlSecondsAfterFinished: 3600
+      # Retry up to 3 times on failure
+      backoffLimit: 3
+      template:
+        metadata:
+          labels:
+            app: twc-recommendations
+            component: ab-test-promoter
+        spec:
+          serviceAccountName: twc-recommendations
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            fsGroup: 1000
+          containers:
+            - name: ab-test-promoter
+              # Same image as the main service
+              image: 354582224285.dkr.ecr.ap-southeast-2.amazonaws.com/twc-recommendations:latest
+              imagePullPolicy: Always
+              command:
+                - python
+                - -m
+                - src.jobs.ab_test_promoter
+              envFrom:
+                - configMapRef:
+                    name: twc-recommendations-config
+                - secretRef:
+                    name: twc-recommendations-secrets
+              resources:
+                requests:
+                  cpu: "100m"
+                  memory: "256Mi"
+                limits:
+                  cpu: "500m"
+                  memory: "512Mi"
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL

@@ -1,17 +1,22 @@
 """API routes for the recommendation service."""
 import os
+from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..models import Customer, Product, ScoredProduct
 from ..models.logging import RecommendationEvent, RecommendationType, OutcomeType, OutcomeActor
+from ..models.ab_test import ABTestConfig, ABTestResults, TenantConfig
 from ..engine.logging_service import RecommendationLogger
+from ..engine.ab_test_manager import ABTestManager
+from ..engine.ab_test_analyzer import ABTestAnalyzer
 from ..config import RecommendationWeights, DEFAULT_WEIGHTS
 from ..config.clickhouse import get_clickhouse_config
 from ..engine import RecommendationEngine
 from ..data.clickhouse_repository import ClickHouseCustomerRepository, ClickHouseProductRepository
 from ..data.logging_repository import RecommendationLogRepository
+from ..data.ab_test_repository import ABTestRepository
 
 
 router = APIRouter(prefix="/api/v1", tags=["recommendations"])
@@ -25,6 +30,9 @@ engine = RecommendationEngine()
 # Initialize logging repository (optional - only if ClickHouse is configured)
 _log_repo: Optional[RecommendationLogRepository] = None
 _logger: Optional[RecommendationLogger] = None
+_ab_test_manager: Optional[ABTestManager] = None
+_ab_test_analyzer: Optional[ABTestAnalyzer] = None
+_ab_test_repo: Optional[ABTestRepository] = None
 
 def get_log_repo() -> Optional[RecommendationLogRepository]:
     """Lazy initialization of logging repository."""
@@ -40,6 +48,30 @@ def get_logger() -> Optional[RecommendationLogger]:
     if _logger is None and os.getenv("CLICKHOUSE_HOST"):
         _logger = RecommendationLogger(get_clickhouse_config())
     return _logger
+
+
+def get_ab_test_manager() -> Optional[ABTestManager]:
+    """Lazy initialization of A/B test manager."""
+    global _ab_test_manager
+    if _ab_test_manager is None and os.getenv("CLICKHOUSE_HOST"):
+        _ab_test_manager = ABTestManager(get_clickhouse_config())
+    return _ab_test_manager
+
+
+def get_ab_test_analyzer() -> Optional[ABTestAnalyzer]:
+    """Lazy initialization of A/B test analyzer."""
+    global _ab_test_analyzer
+    if _ab_test_analyzer is None and os.getenv("CLICKHOUSE_HOST"):
+        _ab_test_analyzer = ABTestAnalyzer(get_clickhouse_config())
+    return _ab_test_analyzer
+
+
+def get_ab_test_repo() -> Optional[ABTestRepository]:
+    """Lazy initialization of A/B test repository."""
+    global _ab_test_repo
+    if _ab_test_repo is None and os.getenv("CLICKHOUSE_HOST"):
+        _ab_test_repo = ABTestRepository(get_clickhouse_config())
+    return _ab_test_repo
 
 
 def build_context_features(customer: Customer) -> dict:
@@ -85,8 +117,10 @@ class RecommendationResponse(BaseModel):
     customer_id: str
     retailer_id: str
     recommendations: list[ScoredProduct]
-    weights_used: str  # "default", "new_customer", "custom"
+    weights_used: str  # "default", "new_customer", "custom", or preset name
     event_id: Optional[str] = None  # Recommendation event ID for tracking
+    ab_test_id: Optional[str] = None  # A/B test ID if in test
+    ab_test_variant: Optional[str] = None  # "control" or "treatment"
 
 
 class OutcomeRequest(BaseModel):
@@ -237,6 +271,9 @@ async def get_recommendations(
 
     This is the main endpoint for the "VIP walks in the door" use case.
     Returns top N personalized product recommendations.
+
+    If there's an active A/B test, the customer will be assigned to a variant
+    and the appropriate weights will be used.
     """
     # Fetch customer profile
     customer = customer_repo.get_customer(retailer_id, customer_id)
@@ -259,21 +296,43 @@ async def get_recommendations(
     # Parse exclusions
     exclude_ids = set(exclude.split(",")) if exclude else set()
 
-    # Generate recommendations
+    # Check for A/B test assignment
+    ab_manager = get_ab_test_manager()
+    ab_assignment = None
+    weights = None
+    ab_test_id = None
+    ab_test_variant = None
+
+    if ab_manager:
+        try:
+            ab_assignment = ab_manager.assign_variant(retailer_id, customer_id)
+            if ab_assignment:
+                weights = ab_assignment.weights
+                ab_test_id = ab_assignment.test_id
+                ab_test_variant = ab_assignment.variant
+        except Exception:
+            # Don't fail if A/B test assignment fails
+            pass
+
+    # Generate recommendations with variant weights (if assigned) or default
     recommendations = engine.recommend(
         customer=customer,
         products=products,
         n=n,
+        weights=weights,
         exclude_product_ids=exclude_ids,
         fill_with_popular=fill_with_popular,
     )
 
     # Determine which weights were used
-    weights_used = "default"
-    if customer.purchase_history.total_purchases == 0 and customer.wishlist.total_wishlisted == 0:
+    if ab_assignment:
+        weights_used = ab_assignment.weights_name
+    elif customer.purchase_history.total_purchases == 0 and customer.wishlist.total_wishlisted == 0:
         weights_used = "new_customer"
+    else:
+        weights_used = "default"
 
-    # Log recommendation event
+    # Log recommendation event with A/B test info
     event_id = None
     log_repo = get_log_repo()
     if log_repo and recommendations:
@@ -287,6 +346,8 @@ async def get_recommendations(
             context_features=build_context_features(customer),
             model_version="rule-based-v1",
             weights_config=weights_used,
+            ab_test_id=ab_test_id,
+            ab_test_variant=ab_test_variant,
         )
         try:
             log_repo.log_recommendation(event)
@@ -301,6 +362,8 @@ async def get_recommendations(
         recommendations=recommendations,
         weights_used=weights_used,
         event_id=event_id,
+        ab_test_id=ab_test_id,
+        ab_test_variant=ab_test_variant,
     )
 
 
@@ -375,6 +438,8 @@ async def get_recommendations_custom(
         recommendations=recommendations,
         weights_used=weights_used,
         event_id=event_id,
+        ab_test_id=None,  # Custom weights bypass A/B testing
+        ab_test_variant=None,
     )
 
 
@@ -500,3 +565,350 @@ async def get_wishlist_alternatives(
 async def health_check():
     """Health check endpoint."""
     return {"status": "healthy", "service": "twc-recommendations"}
+
+
+# ==================== A/B Test Management Endpoints ====================
+
+class CreateABTestRequest(BaseModel):
+    """Request body for creating an A/B test."""
+    name: str
+    description: str = ""
+    control_weights: str = "default"  # Name of control weights preset
+    treatment_weights: str  # Name of treatment weights preset
+    traffic_percentage: float = Field(default=50.0, ge=0, le=100)
+
+
+class UpdateABTestRequest(BaseModel):
+    """Request body for updating an A/B test."""
+    is_active: Optional[bool] = None
+    traffic_percentage: Optional[float] = Field(default=None, ge=0, le=100)
+
+
+class ABTestResponse(BaseModel):
+    """Response containing A/B test details."""
+    test_id: str
+    tenant_id: str
+    name: str
+    description: str
+    control_weights: str
+    treatment_weights: str
+    traffic_percentage: float
+    is_active: bool
+    start_date: datetime
+    end_date: Optional[datetime] = None
+
+
+class ABTestResultsResponse(BaseModel):
+    """Response containing A/B test results with metrics."""
+    test_id: str
+    test_name: str
+    tenant_id: str
+    control_cvr: float
+    treatment_cvr: float
+    lift: float
+    p_value: float
+    is_significant: bool
+    confidence_level: float
+    total_samples: int
+    has_enough_samples: bool
+    min_samples_required: int
+    recommended_action: str
+    recommended_weights: Optional[str] = None
+    days_running: int
+
+
+class TenantConfigRequest(BaseModel):
+    """Request body for updating tenant A/B test configuration."""
+    auto_promote_enabled: Optional[bool] = None
+    auto_start_new_tests: Optional[bool] = None
+    min_samples_for_significance: Optional[int] = None
+    p_value_threshold: Optional[float] = None
+    min_lift_for_promotion: Optional[float] = None
+    new_test_traffic_percentage: Optional[int] = None
+
+
+@router.post("/ab-tests/{retailer_id}")
+async def create_ab_test(
+    retailer_id: str,
+    request: CreateABTestRequest,
+) -> ABTestResponse:
+    """
+    Create a new A/B test for a retailer.
+
+    Only one A/B test can be active per retailer at a time.
+    The control_weights and treatment_weights should be preset names
+    (e.g., "default", "behavior_heavy", "preference_heavy").
+    """
+    repo = get_ab_test_repo()
+    if not repo:
+        raise HTTPException(
+            status_code=503,
+            detail="A/B test service not available"
+        )
+
+    # Check for existing active tests
+    active_tests = repo.get_active_tests(retailer_id)
+    if active_tests:
+        raise HTTPException(
+            status_code=409,
+            detail=f"An active test already exists: {active_tests[0].name}. End it before creating a new one."
+        )
+
+    # Create the test
+    config = ABTestConfig(
+        tenant_id=retailer_id,
+        name=request.name,
+        description=request.description,
+        control_weights=request.control_weights,
+        treatment_weights=request.treatment_weights,
+        traffic_percentage=request.traffic_percentage,
+    )
+
+    created = repo.create_test(config)
+
+    return ABTestResponse(
+        test_id=created.test_id,
+        tenant_id=created.tenant_id,
+        name=created.name,
+        description=created.description,
+        control_weights=created.control_weights,
+        treatment_weights=created.treatment_weights,
+        traffic_percentage=created.traffic_percentage,
+        is_active=created.is_active,
+        start_date=created.start_date,
+        end_date=created.end_date,
+    )
+
+
+@router.get("/ab-tests/{retailer_id}")
+async def list_ab_tests(
+    retailer_id: str,
+) -> list[ABTestResponse]:
+    """
+    List all active A/B tests for a retailer.
+    """
+    repo = get_ab_test_repo()
+    if not repo:
+        raise HTTPException(
+            status_code=503,
+            detail="A/B test service not available"
+        )
+
+    tests = repo.get_active_tests(retailer_id)
+
+    return [
+        ABTestResponse(
+            test_id=t.test_id,
+            tenant_id=t.tenant_id,
+            name=t.name,
+            description=t.description,
+            control_weights=t.control_weights,
+            treatment_weights=t.treatment_weights,
+            traffic_percentage=t.traffic_percentage,
+            is_active=t.is_active,
+            start_date=t.start_date,
+            end_date=t.end_date,
+        )
+        for t in tests
+    ]
+
+
+@router.get("/ab-tests/{retailer_id}/{test_id}")
+async def get_ab_test(
+    retailer_id: str,
+    test_id: str,
+) -> ABTestResultsResponse:
+    """
+    Get A/B test details with current results and statistical analysis.
+
+    Returns metrics for both variants, lift, p-value, and recommended action.
+    """
+    analyzer = get_ab_test_analyzer()
+    if not analyzer:
+        raise HTTPException(
+            status_code=503,
+            detail="A/B test service not available"
+        )
+
+    try:
+        results = analyzer.analyze_test(test_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    # Verify tenant ownership
+    if results.tenant_id != retailer_id:
+        raise HTTPException(status_code=404, detail="Test not found")
+
+    return ABTestResultsResponse(
+        test_id=results.test_id,
+        test_name=results.test_name,
+        tenant_id=results.tenant_id,
+        control_cvr=results.control.conversion_rate,
+        treatment_cvr=results.treatment.conversion_rate,
+        lift=results.lift,
+        p_value=results.p_value,
+        is_significant=results.is_significant,
+        confidence_level=results.confidence_level,
+        total_samples=results.total_samples,
+        has_enough_samples=results.has_enough_samples,
+        min_samples_required=results.min_samples_required,
+        recommended_action=results.recommended_action,
+        recommended_weights=results.recommended_weights,
+        days_running=results.days_running,
+    )
+
+
+@router.put("/ab-tests/{retailer_id}/{test_id}")
+async def update_ab_test(
+    retailer_id: str,
+    test_id: str,
+    request: UpdateABTestRequest,
+) -> ABTestResponse:
+    """
+    Update an A/B test.
+
+    Can be used to:
+    - End a test by setting is_active to false
+    - Adjust traffic percentage
+    """
+    repo = get_ab_test_repo()
+    if not repo:
+        raise HTTPException(
+            status_code=503,
+            detail="A/B test service not available"
+        )
+
+    # Verify test exists and belongs to tenant
+    test = repo.get_test(test_id)
+    if not test or test.tenant_id != retailer_id:
+        raise HTTPException(status_code=404, detail="Test not found")
+
+    # Apply updates
+    updated = repo.update_test(
+        test_id=test_id,
+        is_active=request.is_active,
+        traffic_percentage=request.traffic_percentage,
+    )
+
+    if not updated:
+        raise HTTPException(status_code=404, detail="Test not found")
+
+    return ABTestResponse(
+        test_id=updated.test_id,
+        tenant_id=updated.tenant_id,
+        name=updated.name,
+        description=updated.description,
+        control_weights=updated.control_weights,
+        treatment_weights=updated.treatment_weights,
+        traffic_percentage=updated.traffic_percentage,
+        is_active=updated.is_active,
+        start_date=updated.start_date,
+        end_date=updated.end_date,
+    )
+
+
+@router.delete("/ab-tests/{retailer_id}/{test_id}")
+async def end_ab_test(
+    retailer_id: str,
+    test_id: str,
+) -> dict:
+    """
+    End an A/B test.
+
+    This marks the test as inactive and sets the end date.
+    It does NOT auto-promote the winner - use the analyzer for that.
+    """
+    repo = get_ab_test_repo()
+    if not repo:
+        raise HTTPException(
+            status_code=503,
+            detail="A/B test service not available"
+        )
+
+    # Verify test exists and belongs to tenant
+    test = repo.get_test(test_id)
+    if not test or test.tenant_id != retailer_id:
+        raise HTTPException(status_code=404, detail="Test not found")
+
+    repo.end_test(test_id)
+
+    return {"success": True, "test_id": test_id, "action": "ended"}
+
+
+@router.get("/ab-tests/{retailer_id}/config")
+async def get_tenant_ab_config(
+    retailer_id: str,
+) -> TenantConfig:
+    """
+    Get A/B testing configuration for a retailer.
+
+    Returns settings like auto_promote_enabled, min_samples, etc.
+    """
+    repo = get_ab_test_repo()
+    if not repo:
+        raise HTTPException(
+            status_code=503,
+            detail="A/B test service not available"
+        )
+
+    return repo.get_tenant_config(retailer_id)
+
+
+@router.put("/ab-tests/{retailer_id}/config")
+async def update_tenant_ab_config(
+    retailer_id: str,
+    request: TenantConfigRequest,
+) -> TenantConfig:
+    """
+    Update A/B testing configuration for a retailer.
+
+    Use this to:
+    - Disable auto-promotion: {"auto_promote_enabled": false}
+    - Disable auto-starting new tests: {"auto_start_new_tests": false}
+    - Adjust significance thresholds
+    """
+    repo = get_ab_test_repo()
+    if not repo:
+        raise HTTPException(
+            status_code=503,
+            detail="A/B test service not available"
+        )
+
+    # Update each provided config value
+    if request.auto_promote_enabled is not None:
+        repo.set_tenant_config(
+            retailer_id, "AUTO_PROMOTE_ENABLED",
+            "true" if request.auto_promote_enabled else "false"
+        )
+
+    if request.auto_start_new_tests is not None:
+        repo.set_tenant_config(
+            retailer_id, "AUTO_START_NEW_TESTS",
+            "true" if request.auto_start_new_tests else "false"
+        )
+
+    if request.min_samples_for_significance is not None:
+        repo.set_tenant_config(
+            retailer_id, "MIN_SAMPLES_FOR_SIGNIFICANCE",
+            str(request.min_samples_for_significance)
+        )
+
+    if request.p_value_threshold is not None:
+        repo.set_tenant_config(
+            retailer_id, "P_VALUE_THRESHOLD",
+            str(request.p_value_threshold)
+        )
+
+    if request.min_lift_for_promotion is not None:
+        repo.set_tenant_config(
+            retailer_id, "MIN_LIFT_FOR_PROMOTION",
+            str(request.min_lift_for_promotion)
+        )
+
+    if request.new_test_traffic_percentage is not None:
+        repo.set_tenant_config(
+            retailer_id, "NEW_TEST_TRAFFIC_PERCENTAGE",
+            str(request.new_test_traffic_percentage)
+        )
+
+    return repo.get_tenant_config(retailer_id)

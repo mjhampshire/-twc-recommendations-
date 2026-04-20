@@ -2,6 +2,7 @@
 from .repository import CustomerRepository, ProductRepository
 from .clickhouse_repository import ClickHouseCustomerRepository, ClickHouseProductRepository
 from .logging_repository import RecommendationLogRepository
+from .ab_test_repository import ABTestRepository
 
 __all__ = [
     # Mock repositories (for development/testing)
@@ -11,4 +12,6 @@ __all__ = [
     "ClickHouseCustomerRepository",
     "ClickHouseProductRepository",
     "RecommendationLogRepository",
+    # A/B test repository
+    "ABTestRepository",
 ]
