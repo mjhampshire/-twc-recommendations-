@@ -33,6 +33,12 @@ class OutcomeType(str, Enum):
     DISMISSED = "dismissed"  # Explicitly dismissed/hidden
 
 
+class OutcomeActor(str, Enum):
+    """Who initiated the outcome action."""
+    CUSTOMER = "customer"  # Customer took action themselves
+    STAFF = "staff"  # Staff member took action on behalf of customer
+
+
 class RecommendationEvent(BaseModel):
     """
     Captures a single recommendation event.
@@ -87,6 +93,10 @@ class RecommendationOutcome(BaseModel):
     outcome_type: OutcomeType
     item_id: str  # Which product was interacted with
     position: int  # Position in the recommendation list (1-indexed)
+
+    # Who initiated the action
+    actor: OutcomeActor = OutcomeActor.CUSTOMER
+    staff_id: Optional[str] = None  # If actor is STAFF
 
     # Purchase details (if outcome is PURCHASED)
     purchase_value: Optional[float] = None

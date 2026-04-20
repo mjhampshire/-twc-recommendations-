@@ -16,6 +16,7 @@ from .logging import (
     RecommendationMetrics,
     RecommendationType,
     OutcomeType,
+    OutcomeActor,
     ABTestConfig,
 )
 
@@ -41,5 +42,6 @@ __all__ = [
     "RecommendationMetrics",
     "RecommendationType",
     "OutcomeType",
+    "OutcomeActor",
     "ABTestConfig",
 ]

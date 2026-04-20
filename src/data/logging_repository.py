@@ -108,6 +108,8 @@ class RecommendationLogRepository:
                     outcome.outcome_type,
                     outcome.item_id,
                     outcome.position,
+                    outcome.actor,
+                    outcome.staff_id or "",
                     outcome.purchase_value,
                     outcome.purchase_order_id or "",
                     outcome.days_to_conversion,
@@ -115,8 +117,8 @@ class RecommendationLogRepository:
                 ]],
                 column_names=[
                     "eventId", "recommendationEventId", "tenantId", "customerId",
-                    "outcomeType", "itemId", "position", "purchaseValue",
-                    "purchaseOrderId", "daysToConversion", "occurredAt"
+                    "outcomeType", "itemId", "position", "actor", "staffId",
+                    "purchaseValue", "purchaseOrderId", "daysToConversion", "occurredAt"
                 ]
             )
         finally:

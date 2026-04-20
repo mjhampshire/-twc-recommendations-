@@ -5,7 +5,8 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from ..models import Customer, Product, ScoredProduct
-from ..models.logging import RecommendationEvent, RecommendationType
+from ..models.logging import RecommendationEvent, RecommendationType, OutcomeType, OutcomeActor
+from ..engine.logging_service import RecommendationLogger
 from ..config import RecommendationWeights, DEFAULT_WEIGHTS
 from ..config.clickhouse import get_clickhouse_config
 from ..engine import RecommendationEngine
@@ -23,6 +24,7 @@ engine = RecommendationEngine()
 
 # Initialize logging repository (optional - only if ClickHouse is configured)
 _log_repo: Optional[RecommendationLogRepository] = None
+_logger: Optional[RecommendationLogger] = None
 
 def get_log_repo() -> Optional[RecommendationLogRepository]:
     """Lazy initialization of logging repository."""
@@ -30,6 +32,14 @@ def get_log_repo() -> Optional[RecommendationLogRepository]:
     if _log_repo is None and os.getenv("CLICKHOUSE_HOST"):
         _log_repo = RecommendationLogRepository(get_clickhouse_config())
     return _log_repo
+
+
+def get_logger() -> Optional[RecommendationLogger]:
+    """Lazy initialization of recommendation logger."""
+    global _logger
+    if _logger is None and os.getenv("CLICKHOUSE_HOST"):
+        _logger = RecommendationLogger(get_clickhouse_config())
+    return _logger
 
 
 def build_context_features(customer: Customer) -> dict:
@@ -77,6 +87,120 @@ class RecommendationResponse(BaseModel):
     recommendations: list[ScoredProduct]
     weights_used: str  # "default", "new_customer", "custom"
     event_id: Optional[str] = None  # Recommendation event ID for tracking
+
+
+class OutcomeRequest(BaseModel):
+    """Request body for logging a recommendation outcome."""
+    product_id: str  # The product that was interacted with
+    position: int  # Position in the recommendation list (1-indexed)
+    outcome_type: OutcomeType  # What happened: clicked, added_to_cart, added_to_wishlist, dismissed
+    actor: OutcomeActor = OutcomeActor.CUSTOMER  # Who took the action
+    staff_id: Optional[str] = None  # Required if actor is STAFF
+
+
+class OutcomeResponse(BaseModel):
+    """Response after logging an outcome."""
+    success: bool
+    outcome_event_id: str
+
+
+@router.post("/outcomes/{retailer_id}/{customer_id}/{event_id}")
+async def log_outcome(
+    retailer_id: str,
+    customer_id: str,
+    event_id: str,
+    request: OutcomeRequest,
+) -> OutcomeResponse:
+    """
+    Log an outcome/interaction with a recommendation.
+
+    Call this when a user interacts with a recommended product:
+    - clicked: User clicked to view product details
+    - added_to_cart: User added product to cart
+    - added_to_wishlist: User added product to wishlist
+    - dismissed: User explicitly dismissed/hid the recommendation
+
+    For staff-initiated actions (e.g., staff adding to wishlist on behalf of customer),
+    set actor to "staff" and provide the staff_id. Staff-initiated outcomes are logged
+    but excluded from recommendation success metrics.
+
+    The event_id should be the one returned from the original recommendation request.
+    """
+    logger = get_logger()
+    if not logger:
+        raise HTTPException(
+            status_code=503,
+            detail="Logging service not available"
+        )
+
+    # Map outcome type to logger method
+    outcome_type = request.outcome_type
+    try:
+        if outcome_type == OutcomeType.CLICKED:
+            logger.log_click(
+                recommendation_event_id=event_id,
+                tenant_id=retailer_id,
+                customer_id=customer_id,
+                product_id=request.product_id,
+                position=request.position,
+                actor=request.actor,
+                staff_id=request.staff_id,
+            )
+        elif outcome_type == OutcomeType.ADDED_TO_CART:
+            logger.log_add_to_cart(
+                recommendation_event_id=event_id,
+                tenant_id=retailer_id,
+                customer_id=customer_id,
+                product_id=request.product_id,
+                position=request.position,
+                actor=request.actor,
+                staff_id=request.staff_id,
+            )
+        elif outcome_type == OutcomeType.ADDED_TO_WISHLIST:
+            logger.log_add_to_wishlist(
+                recommendation_event_id=event_id,
+                tenant_id=retailer_id,
+                customer_id=customer_id,
+                product_id=request.product_id,
+                position=request.position,
+                actor=request.actor,
+                staff_id=request.staff_id,
+            )
+        elif outcome_type == OutcomeType.DISMISSED:
+            logger.log_dismissed(
+                recommendation_event_id=event_id,
+                tenant_id=retailer_id,
+                customer_id=customer_id,
+                product_id=request.product_id,
+                position=request.position,
+                actor=request.actor,
+                staff_id=request.staff_id,
+            )
+        elif outcome_type == OutcomeType.VIEWED:
+            logger.log_view(
+                recommendation_event_id=event_id,
+                tenant_id=retailer_id,
+                customer_id=customer_id,
+                product_id=request.product_id,
+                position=request.position,
+                actor=request.actor,
+                staff_id=request.staff_id,
+            )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported outcome type: {outcome_type}. Use 'clicked', 'added_to_cart', 'added_to_wishlist', 'viewed', or 'dismissed'."
+            )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to log outcome: {str(e)}"
+        )
+
+    return OutcomeResponse(
+        success=True,
+        outcome_event_id=event_id,
+    )
 
 
 @router.get("/categories/{retailer_id}")

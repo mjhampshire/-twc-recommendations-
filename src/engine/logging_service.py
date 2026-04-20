@@ -12,6 +12,7 @@ from ..models.logging import (
     RecommendationOutcome,
     RecommendationType,
     OutcomeType,
+    OutcomeActor,
 )
 from ..data.logging_repository import RecommendationLogRepository
 from ..config.clickhouse import ClickHouseConfig
@@ -145,6 +146,8 @@ class RecommendationLogger:
         customer_id: str,
         product_id: str,
         position: int,
+        actor: OutcomeActor = OutcomeActor.CUSTOMER,
+        staff_id: Optional[str] = None,
     ) -> None:
         """Log when a customer views a recommended product."""
         if not self.enabled:
@@ -157,6 +160,8 @@ class RecommendationLogger:
             outcome_type=OutcomeType.VIEWED,
             product_id=product_id,
             position=position,
+            actor=actor,
+            staff_id=staff_id,
         )
 
     def log_click(
@@ -166,6 +171,8 @@ class RecommendationLogger:
         customer_id: str,
         product_id: str,
         position: int,
+        actor: OutcomeActor = OutcomeActor.CUSTOMER,
+        staff_id: Optional[str] = None,
     ) -> None:
         """Log when a customer clicks a recommended product."""
         if not self.enabled:
@@ -178,6 +185,8 @@ class RecommendationLogger:
             outcome_type=OutcomeType.CLICKED,
             product_id=product_id,
             position=position,
+            actor=actor,
+            staff_id=staff_id,
         )
 
     def log_add_to_cart(
@@ -187,6 +196,8 @@ class RecommendationLogger:
         customer_id: str,
         product_id: str,
         position: int,
+        actor: OutcomeActor = OutcomeActor.CUSTOMER,
+        staff_id: Optional[str] = None,
     ) -> None:
         """Log when a customer adds a recommended product to cart."""
         if not self.enabled:
@@ -199,6 +210,8 @@ class RecommendationLogger:
             outcome_type=OutcomeType.ADDED_TO_CART,
             product_id=product_id,
             position=position,
+            actor=actor,
+            staff_id=staff_id,
         )
 
     def log_add_to_wishlist(
@@ -208,6 +221,8 @@ class RecommendationLogger:
         customer_id: str,
         product_id: str,
         position: int,
+        actor: OutcomeActor = OutcomeActor.CUSTOMER,
+        staff_id: Optional[str] = None,
     ) -> None:
         """Log when a customer adds a recommended product to wishlist."""
         if not self.enabled:
@@ -220,6 +235,8 @@ class RecommendationLogger:
             outcome_type=OutcomeType.ADDED_TO_WISHLIST,
             product_id=product_id,
             position=position,
+            actor=actor,
+            staff_id=staff_id,
         )
 
     def log_purchase(
@@ -232,6 +249,8 @@ class RecommendationLogger:
         purchase_value: float,
         order_id: Optional[str] = None,
         recommendation_date: Optional[datetime] = None,
+        actor: OutcomeActor = OutcomeActor.CUSTOMER,
+        staff_id: Optional[str] = None,
     ) -> None:
         """Log when a customer purchases a recommended product."""
         if not self.enabled:
@@ -249,6 +268,8 @@ class RecommendationLogger:
             outcome_type=OutcomeType.PURCHASED,
             item_id=product_id,
             position=position,
+            actor=actor,
+            staff_id=staff_id,
             purchase_value=purchase_value,
             purchase_order_id=order_id,
             days_to_conversion=days_to_conversion,
@@ -263,6 +284,8 @@ class RecommendationLogger:
         customer_id: str,
         product_id: str,
         position: int,
+        actor: OutcomeActor = OutcomeActor.CUSTOMER,
+        staff_id: Optional[str] = None,
     ) -> None:
         """Log when a customer dismisses a recommended product."""
         if not self.enabled:
@@ -275,6 +298,8 @@ class RecommendationLogger:
             outcome_type=OutcomeType.DISMISSED,
             product_id=product_id,
             position=position,
+            actor=actor,
+            staff_id=staff_id,
         )
 
     def _log_outcome(
@@ -285,6 +310,8 @@ class RecommendationLogger:
         outcome_type: OutcomeType,
         product_id: str,
         position: int,
+        actor: OutcomeActor = OutcomeActor.CUSTOMER,
+        staff_id: Optional[str] = None,
     ) -> None:
         """Internal method to log an outcome."""
         outcome = RecommendationOutcome(
@@ -294,6 +321,8 @@ class RecommendationLogger:
             outcome_type=outcome_type,
             item_id=product_id,
             position=position,
+            actor=actor,
+            staff_id=staff_id,
         )
 
         self.repository.log_outcome(outcome)
