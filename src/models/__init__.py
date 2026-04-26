@@ -27,6 +27,12 @@ from .ab_test import (
     TenantConfig,
     WeightPreset,
 )
+from .bandit import (
+    BanditArmStats,
+    BanditConfig,
+    BanditSelection,
+    BanditSummary,
+)
 
 __all__ = [
     # Customer models
@@ -59,4 +65,9 @@ __all__ = [
     "TenantWeights",
     "TenantConfig",
     "WeightPreset",
+    # Bandit models
+    "BanditArmStats",
+    "BanditConfig",
+    "BanditSelection",
+    "BanditSummary",
 ]

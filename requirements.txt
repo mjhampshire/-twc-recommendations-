@@ -17,8 +17,9 @@ clickhouse-connect>=0.7.0
 # Utilities
 python-dotenv>=1.0.0
 
-# Statistical analysis (for A/B testing)
+# Statistical analysis (for A/B testing and bandit)
 scipy>=1.11.0
+numpy>=1.24.0
 
 # Development
 pytest>=7.4.0

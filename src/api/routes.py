@@ -8,9 +8,11 @@ from pydantic import BaseModel, Field
 from ..models import Customer, Product, ScoredProduct
 from ..models.logging import RecommendationEvent, RecommendationType, OutcomeType, OutcomeActor
 from ..models.ab_test import ABTestConfig, ABTestResults, TenantConfig
+from ..models.bandit import BanditSummary
 from ..engine.logging_service import RecommendationLogger
 from ..engine.ab_test_manager import ABTestManager
 from ..engine.ab_test_analyzer import ABTestAnalyzer
+from ..engine.bandit_manager import BanditManager
 from ..config import RecommendationWeights, DEFAULT_WEIGHTS
 from ..config.clickhouse import get_clickhouse_config
 from ..engine import RecommendationEngine
@@ -33,6 +35,7 @@ _logger: Optional[RecommendationLogger] = None
 _ab_test_manager: Optional[ABTestManager] = None
 _ab_test_analyzer: Optional[ABTestAnalyzer] = None
 _ab_test_repo: Optional[ABTestRepository] = None
+_bandit_manager: Optional[BanditManager] = None
 
 def get_log_repo() -> Optional[RecommendationLogRepository]:
     """Lazy initialization of logging repository."""
@@ -72,6 +75,14 @@ def get_ab_test_repo() -> Optional[ABTestRepository]:
     if _ab_test_repo is None and os.getenv("CLICKHOUSE_HOST"):
         _ab_test_repo = ABTestRepository(get_clickhouse_config())
     return _ab_test_repo
+
+
+def get_bandit_manager() -> Optional[BanditManager]:
+    """Lazy initialization of bandit manager."""
+    global _bandit_manager
+    if _bandit_manager is None and os.getenv("CLICKHOUSE_HOST"):
+        _bandit_manager = BanditManager(get_clickhouse_config())
+    return _bandit_manager
 
 
 def build_context_features(customer: Customer) -> dict:
@@ -296,34 +307,57 @@ async def get_recommendations(
     # Parse exclusions
     exclude_ids = set(exclude.split(",")) if exclude else set()
 
-    # Check for A/B test assignment or tenant's best weights
+    # Weight selection priority:
+    # 1. Active A/B test → use variant weights
+    # 2. Bandit enabled → use Thompson Sampling to select arm
+    # 3. Tenant's promoted weights from past A/B tests
+    # 4. System default
+    # 5. New customer override (if applicable)
+
     ab_manager = get_ab_test_manager()
+    bandit_manager = get_bandit_manager()
     ab_assignment = None
+    bandit_selection = None
     weights = None
     weights_used = "default"
     ab_test_id = None
     ab_test_variant = None
 
+    # 1. Check for active A/B test (takes priority over bandit)
     if ab_manager:
         try:
-            # First, check for active A/B test
             ab_assignment = ab_manager.assign_variant(retailer_id, customer_id)
             if ab_assignment:
                 weights = ab_assignment.weights
                 weights_used = ab_assignment.weights_name
                 ab_test_id = ab_assignment.test_id
                 ab_test_variant = ab_assignment.variant
-            else:
-                # No active test - use tenant's best weights from previous A/B test winners
-                tenant_weights_name, tenant_weights = ab_manager.get_tenant_default_weights(retailer_id)
-                if tenant_weights_name != "default":
-                    weights = tenant_weights
-                    weights_used = tenant_weights_name
         except Exception:
-            # Don't fail if A/B test/weights lookup fails
             pass
 
-    # Override for new customers (no purchase history, no wishlist)
+    # 2. No A/B test - try bandit
+    if weights is None and bandit_manager:
+        try:
+            bandit_selection = bandit_manager.select_arm(retailer_id, customer_id)
+            if bandit_selection:
+                weights = bandit_manager.get_weights_for_arm(bandit_selection.arm, retailer_id)
+                weights_used = f"bandit:{bandit_selection.arm}"
+                # Record impression for bandit stats
+                bandit_manager.record_impression(retailer_id, bandit_selection.arm)
+        except Exception:
+            pass
+
+    # 3. No bandit - use tenant's promoted weights from A/B test winners
+    if weights is None and ab_manager:
+        try:
+            tenant_weights_name, tenant_weights = ab_manager.get_tenant_default_weights(retailer_id)
+            if tenant_weights_name != "default":
+                weights = tenant_weights
+                weights_used = tenant_weights_name
+        except Exception:
+            pass
+
+    # 4. Override for new customers (no purchase history, no wishlist)
     if weights is None and customer.purchase_history.total_purchases == 0 and customer.wishlist.total_wishlisted == 0:
         weights_used = "new_customer"
 
@@ -917,3 +951,123 @@ async def update_tenant_ab_config(
         )
 
     return repo.get_tenant_config(retailer_id)
+
+
+# ============================================================================
+# Multi-Armed Bandit Endpoints
+# ============================================================================
+
+class BanditConfigRequest(BaseModel):
+    """Request body for updating bandit configuration."""
+    enabled: Optional[bool] = None
+    arms: Optional[list[str]] = None
+
+
+class BanditSyncResponse(BaseModel):
+    """Response from syncing bandit stats."""
+    synced_arms: dict
+
+
+@router.get("/bandit/{retailer_id}")
+async def get_bandit_summary(retailer_id: str) -> BanditSummary:
+    """
+    Get bandit status and arm statistics for a retailer.
+
+    Returns current configuration, arm conversion rates, and best performer.
+    """
+    bandit = get_bandit_manager()
+    if not bandit:
+        raise HTTPException(status_code=503, detail="Bandit manager not available")
+
+    return bandit.get_summary(retailer_id)
+
+
+@router.put("/bandit/{retailer_id}")
+async def update_bandit_config(
+    retailer_id: str,
+    request: BanditConfigRequest,
+) -> BanditSummary:
+    """
+    Update bandit configuration for a retailer.
+
+    - enabled: Turn bandit on/off
+    - arms: List of weight presets to use as arms
+    """
+    bandit = get_bandit_manager()
+    if not bandit:
+        raise HTTPException(status_code=503, detail="Bandit manager not available")
+
+    if request.enabled is not None:
+        if request.enabled:
+            bandit.enable(retailer_id)
+        else:
+            bandit.disable(retailer_id)
+
+    if request.arms is not None:
+        bandit.set_arms(retailer_id, request.arms)
+
+    return bandit.get_summary(retailer_id)
+
+
+@router.post("/bandit/{retailer_id}/enable")
+async def enable_bandit(retailer_id: str) -> BanditSummary:
+    """Enable bandit optimization for a retailer."""
+    bandit = get_bandit_manager()
+    if not bandit:
+        raise HTTPException(status_code=503, detail="Bandit manager not available")
+
+    bandit.enable(retailer_id)
+    return bandit.get_summary(retailer_id)
+
+
+@router.post("/bandit/{retailer_id}/disable")
+async def disable_bandit(retailer_id: str) -> BanditSummary:
+    """Disable bandit optimization for a retailer."""
+    bandit = get_bandit_manager()
+    if not bandit:
+        raise HTTPException(status_code=503, detail="Bandit manager not available")
+
+    bandit.disable(retailer_id)
+    return bandit.get_summary(retailer_id)
+
+
+@router.post("/bandit/{retailer_id}/sync")
+async def sync_bandit_stats(
+    retailer_id: str,
+    days_back: int = Query(default=30, ge=1, le=90),
+) -> BanditSyncResponse:
+    """
+    Sync bandit statistics from historical recommendation logs.
+
+    Useful for:
+    - Initializing bandit with historical data before enabling
+    - Recovering from data loss
+    - Periodic recalibration
+
+    Args:
+        days_back: Number of days of history to analyze (default 30)
+    """
+    bandit = get_bandit_manager()
+    if not bandit:
+        raise HTTPException(status_code=503, detail="Bandit manager not available")
+
+    synced = bandit.sync_stats_from_logs(retailer_id, days_back)
+    return BanditSyncResponse(synced_arms=synced)
+
+
+@router.post("/bandit/{retailer_id}/reset")
+async def reset_bandit_stats(
+    retailer_id: str,
+    arm: Optional[str] = Query(default=None, description="Specific arm to reset, or all if not specified"),
+) -> BanditSummary:
+    """
+    Reset bandit statistics for a retailer.
+
+    Use this to start fresh, e.g., after significant changes to weight presets.
+    """
+    bandit = get_bandit_manager()
+    if not bandit:
+        raise HTTPException(status_code=503, detail="Bandit manager not available")
+
+    bandit.reset_stats(retailer_id, arm)
+    return bandit.get_summary(retailer_id)
