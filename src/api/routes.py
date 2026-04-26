@@ -296,25 +296,38 @@ async def get_recommendations(
     # Parse exclusions
     exclude_ids = set(exclude.split(",")) if exclude else set()
 
-    # Check for A/B test assignment
+    # Check for A/B test assignment or tenant's best weights
     ab_manager = get_ab_test_manager()
     ab_assignment = None
     weights = None
+    weights_used = "default"
     ab_test_id = None
     ab_test_variant = None
 
     if ab_manager:
         try:
+            # First, check for active A/B test
             ab_assignment = ab_manager.assign_variant(retailer_id, customer_id)
             if ab_assignment:
                 weights = ab_assignment.weights
+                weights_used = ab_assignment.weights_name
                 ab_test_id = ab_assignment.test_id
                 ab_test_variant = ab_assignment.variant
+            else:
+                # No active test - use tenant's best weights from previous A/B test winners
+                tenant_weights_name, tenant_weights = ab_manager.get_tenant_default_weights(retailer_id)
+                if tenant_weights_name != "default":
+                    weights = tenant_weights
+                    weights_used = tenant_weights_name
         except Exception:
-            # Don't fail if A/B test assignment fails
+            # Don't fail if A/B test/weights lookup fails
             pass
 
-    # Generate recommendations with variant weights (if assigned) or default
+    # Override for new customers (no purchase history, no wishlist)
+    if weights is None and customer.purchase_history.total_purchases == 0 and customer.wishlist.total_wishlisted == 0:
+        weights_used = "new_customer"
+
+    # Generate recommendations with determined weights
     recommendations = engine.recommend(
         customer=customer,
         products=products,
@@ -323,14 +336,6 @@ async def get_recommendations(
         exclude_product_ids=exclude_ids,
         fill_with_popular=fill_with_popular,
     )
-
-    # Determine which weights were used
-    if ab_assignment:
-        weights_used = ab_assignment.weights_name
-    elif customer.purchase_history.total_purchases == 0 and customer.wishlist.total_wishlisted == 0:
-        weights_used = "new_customer"
-    else:
-        weights_used = "default"
 
     # Log recommendation event with A/B test info
     event_id = None
