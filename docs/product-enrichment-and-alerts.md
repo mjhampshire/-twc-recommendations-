@@ -598,6 +598,320 @@ AUTO_PREF_CONFIDENCE_THRESHOLD = 0.8   # Confidence to auto-add preference
 
 ---
 
+## Store-Level Outreach Tasks
+
+### Purpose
+Staff at a store should see alerts for customers whose `usualStore` or `preferredStore` matches their store. These appear as "outreach tasks" in the staff app.
+
+### Schema Update
+
+```sql
+-- Add store fields to alerts for filtering
+ALTER TABLE TWCNEW_ARRIVAL_ALERTS
+    ADD COLUMN IF NOT EXISTS customerUsualStore String DEFAULT '',
+    ADD COLUMN IF NOT EXISTS customerPreferredStore String DEFAULT '';
+
+-- Index for store-level queries
+ALTER TABLE TWCNEW_ARRIVAL_ALERTS
+    ADD INDEX idx_usual_store (customerUsualStore) TYPE set(100) GRANULARITY 4;
+ALTER TABLE TWCNEW_ARRIVAL_ALERTS
+    ADD INDEX idx_preferred_store (customerPreferredStore) TYPE set(100) GRANULARITY 4;
+```
+
+### API Endpoint for Store Staff
+
+```
+GET /api/v1/alerts/{retailer_id}/store/{store_id}
+  - Returns pending alerts for customers at this store
+  - Filters: customerUsualStore = store_id OR customerPreferredStore = store_id
+  - Query params: status=pending, limit=50, sort=match_score_desc
+
+Response:
+{
+  "store_id": "sydney-cbd",
+  "pending_tasks": 12,
+  "alerts": [
+    {
+      "alert_id": "...",
+      "customer_id": "CUST001",
+      "customer_name": "Jane Smith",
+      "product_name": "Floral Midi Dress",
+      "match_score": 0.85,
+      "match_reasons": ["Loves florals", "Zimmermann fan"],
+      "customer_usual_store": "sydney-cbd",
+      "created_at": "2025-04-26T10:00:00Z"
+    }
+  ]
+}
+```
+
+### Workflow
+1. Alert is created with `customerUsualStore` and `customerPreferredStore` populated from customer profile
+2. Store staff opens "Outreach Tasks" in staff app
+3. Staff app calls `/api/v1/alerts/{retailer_id}/store/{current_store}`
+4. Staff sees list of customers to reach out to
+5. Staff marks alerts as `sent`, `dismissed`, or waits for `converted`
+
+---
+
+## CLIP Enrichment Trigger
+
+### How New Products Get Scanned
+
+Products are pushed to CLIP based on the `createdAt` timestamp in `TWCVARIANT`:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                   ENRICHMENT TRIGGER OPTIONS                    │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  Option A: Event-Driven (Recommended)                           │
+│  ────────────────────────────────────                           │
+│  1. Product sync writes to TWCVARIANT                           │
+│  2. Product sync publishes event: "product.created"             │
+│  3. Image Scanner subscribes to event                           │
+│  4. Scanner fetches product, downloads image, runs CLIP         │
+│  5. Results written to TWCPRODUCT_ENRICHMENT                    │
+│                                                                 │
+│  Option B: Polling (Simpler, less real-time)                    │
+│  ────────────────────────────────────────────                   │
+│  1. Scheduled job runs every 5 minutes                          │
+│  2. Query: SELECT * FROM TWCVARIANT                             │
+│            WHERE createdAt > last_processed_timestamp           │
+│            AND variantId NOT IN (SELECT variantId FROM          │
+│                                  TWCPRODUCT_ENRICHMENT)         │
+│  3. Process each new product through CLIP                       │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Recommended: Hybrid Approach
+
+```python
+class EnrichmentTrigger:
+    """Handles triggering CLIP enrichment for products."""
+
+    def __init__(self, config: ClickHouseConfig):
+        self.client = get_clickhouse_client(config)
+        self.scanner = ImageScanner()
+
+    # Primary: Event-driven for new products
+    async def on_product_created(self, event: ProductCreatedEvent):
+        """Handle new product event from product sync service."""
+        await self.enrich_product(event.tenant_id, event.variant_id)
+
+    # Fallback: Catch-up job for missed events
+    def run_catchup_job(self, lookback_hours: int = 24):
+        """
+        Scan products created recently that weren't enriched.
+        Run as scheduled job (e.g., hourly).
+        """
+        unenriched = self.client.query("""
+            SELECT v.tenantId, v.variantId, v.imageUrl
+            FROM TWCVARIANT v
+            LEFT JOIN TWCPRODUCT_ENRICHMENT e
+              ON v.tenantId = e.tenantId AND v.variantId = e.variantId
+            WHERE v.createdAt >= now() - INTERVAL {hours:UInt32} HOUR
+              AND e.variantId IS NULL
+              AND v.imageUrl != ''
+        """, parameters={"hours": lookback_hours})
+
+        for row in unenriched.result_rows:
+            self.enrich_product(row[0], row[1])
+
+    # Backfill: One-time for existing catalog
+    def run_backfill(self, tenant_id: str, batch_size: int = 1000):
+        """
+        Backfill enrichment for existing products.
+        Run as one-time migration or when model is updated.
+        """
+        unenriched = self.client.query("""
+            SELECT v.variantId, v.imageUrl
+            FROM TWCVARIANT v
+            LEFT JOIN TWCPRODUCT_ENRICHMENT e
+              ON v.tenantId = e.tenantId AND v.variantId = e.variantId
+            WHERE v.tenantId = {tenant_id:String}
+              AND e.variantId IS NULL
+              AND v.imageUrl != ''
+            LIMIT {limit:UInt32}
+        """, parameters={"tenant_id": tenant_id, "limit": batch_size})
+
+        # Process in batches...
+```
+
+---
+
+## Auto-Inferred Preferences: Storage Strategy
+
+### The Challenge
+
+The retailer's `TWCPREFERENCES` structure is complex and retailer-defined:
+- Categories, subcategories, specific fields (bra_size, bra_brands, etc.)
+- Display logic, regional visibility, external system sync
+- Shown in customer/staff-facing preference screens
+
+Auto-inferred preferences are different:
+- Simple attributes: "likes florals", "prefers navy", "interested in Zimmermann"
+- Detected from behavior (purchases, browsing) or CLIP image analysis
+- Should NOT appear in FE preference screens by default
+- Should be available for recommendations and reporting
+
+### Recommended: Separate Table for Inferred Preferences
+
+```sql
+-- Separate table for auto-inferred preferences
+-- NOT shown in FE preference screens, but used for recommendations/reports
+CREATE TABLE IF NOT EXISTS TWCINFERRED_PREFERENCES (
+    tenantId String,
+    customerId String,
+
+    -- Preference details
+    preferenceType String,      -- 'pattern', 'color', 'brand', 'category', 'style'
+    preferenceValue String,     -- 'floral', 'navy', 'Zimmermann', 'Dresses'
+    isLike UInt8 DEFAULT 1,     -- 1 = like, 0 = dislike
+
+    -- Inference source
+    inferenceSource String,     -- 'purchase_history', 'browsing', 'wishlist', 'clip_analysis'
+    confidence Float32,         -- 0-1 confidence score
+    evidenceCount UInt32,       -- Number of supporting data points (e.g., 5 purchases)
+
+    -- Metadata
+    firstInferredAt DateTime DEFAULT now(),
+    lastUpdatedAt DateTime DEFAULT now(),
+    isActive UInt8 DEFAULT 1,   -- Can be disabled without deleting
+
+    -- Staff interaction
+    staffConfirmed UInt8 DEFAULT 0,   -- Staff promoted to explicit preference
+    staffDismissed UInt8 DEFAULT 0,   -- Staff rejected this inference
+    staffActionBy String DEFAULT '',
+    staffActionAt Nullable(DateTime)
+
+) ENGINE = ReplacingMergeTree(lastUpdatedAt)
+ORDER BY (tenantId, customerId, preferenceType, preferenceValue);
+```
+
+### Why Separate Table?
+
+| Concern | TWCPREFERENCES | TWCINFERRED_PREFERENCES |
+|---------|----------------|-------------------------|
+| **Structure** | Complex retailer-defined JSON | Simple flat structure |
+| **Source** | Customer/Staff explicit | System-detected |
+| **FE visibility** | Shown in preference screens | Hidden by default |
+| **Sync to external** | Yes (Shopify, etc.) | No |
+| **Reports/filtering** | ✅ | ✅ |
+| **Recommendations** | ✅ | ✅ (lower weight) |
+
+### Recommendations Engine: Query Both Tables
+
+```python
+def get_customer_preferences(tenant_id: str, customer_id: str) -> CustomerPreferences:
+    """
+    Get combined preferences from both explicit and inferred sources.
+    """
+    # 1. Get explicit preferences from TWCPREFERENCES
+    explicit = query_explicit_preferences(tenant_id, customer_id)
+
+    # 2. Get inferred preferences (active, not dismissed)
+    inferred = query_inferred_preferences(tenant_id, customer_id)
+
+    # 3. Merge, with explicit taking precedence
+    return merge_preferences(explicit, inferred)
+
+
+def merge_preferences(
+    explicit: ExplicitPreferences,
+    inferred: list[InferredPreference],
+) -> CustomerPreferences:
+    """
+    Merge explicit and inferred preferences.
+
+    Rules:
+    - Explicit preferences always included
+    - Inferred added only if not conflicting with explicit
+    - Inferred marked with source='auto' for lower weighting
+    """
+    result = CustomerPreferences()
+
+    # Add all explicit preferences (source: customer or staff)
+    for pref in explicit.all_preferences():
+        result.add(pref.type, pref.value, source=pref.source)
+
+    # Add inferred preferences if not conflicting
+    for inf in inferred:
+        if not inf.staff_dismissed and inf.is_active:
+            # Don't add if explicit dislike exists
+            if not explicit.has_dislike(inf.preference_type, inf.preference_value):
+                # Don't add if explicit like already exists (no need to duplicate)
+                if not explicit.has_like(inf.preference_type, inf.preference_value):
+                    result.add(
+                        inf.preference_type,
+                        inf.preference_value,
+                        source=PreferenceSource.AUTO,
+                        confidence=inf.confidence,
+                    )
+
+    return result
+```
+
+### FE Visibility: Configuration Option
+
+If a retailer DOES want to show auto-inferred preferences in the FE (with different styling), add a config flag:
+
+```json
+{
+  "tenant_id": "viktoria-woods",
+  "preference_display_config": {
+    "show_inferred_in_staff_app": true,
+    "show_inferred_in_customer_app": false,
+    "inferred_display_style": "subtle",
+    "allow_staff_confirm_dismiss": true
+  }
+}
+```
+
+### Populating Inferred Preferences
+
+```python
+class PreferenceInferrer:
+    """Infers preferences from customer behavior."""
+
+    def infer_from_purchases(self, tenant_id: str, customer_id: str):
+        """
+        Analyze purchase history to infer preferences.
+        Run periodically or after purchases.
+        """
+        # Count purchases by attribute
+        stats = self.client.query("""
+            SELECT
+                v.category,
+                v.brand,
+                e.pattern,  -- From TWCPRODUCT_ENRICHMENT
+                count(*) as cnt
+            FROM ORDERLINE ol
+            JOIN TWCVARIANT v ON ol.variantRef = v.variantRef
+            LEFT JOIN TWCPRODUCT_ENRICHMENT e ON v.variantId = e.variantId
+            WHERE ol.tenantId = {tenant_id:String}
+              AND ol.customerRef = {customer_id:String}
+            GROUP BY v.category, v.brand, e.pattern
+            HAVING cnt >= 3
+        """, ...)
+
+        # Create inferred preferences for frequently purchased attributes
+        for row in stats.result_rows:
+            category, brand, pattern, count = row
+
+            if category and count >= 3:
+                self.add_inferred('category', category, 'purchase_history', count)
+
+            if brand and count >= 3:
+                self.add_inferred('brand', brand, 'purchase_history', count)
+
+            if pattern and count >= 2:  # Lower threshold for patterns
+                self.add_inferred('pattern', pattern, 'purchase_history', count)
+```
+
+---
+
 ## Open Questions
 
 1. **VIP prioritization:** Different thresholds for VIP vs. regular customers?
