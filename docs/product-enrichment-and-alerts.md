@@ -3,9 +3,15 @@
 ## Overview
 
 This document outlines the architecture for:
-1. **Image-based product enrichment** - Async scanning of product images to detect patterns, styles, and attributes
+1. **Product intelligence pipeline** - Multi-signal enrichment combining retailer tags, descriptions, and image analysis
 2. **New arrival alerts** - Proactive notifications when new products match customer preferences
 3. **Auto-inferred preferences** - System-detected preferences marked with source "auto"
+
+**Key design principle:** CLIP image analysis is ONE signal among many, not the primary driver. The pipeline combines:
+- Retailer/Shopify product tags (primary - already accurate)
+- Product title/description parsing
+- Image enrichment (supplementary, for attributes not in tags)
+- Purchase/wishlist behaviour signals
 
 ---
 
@@ -23,43 +29,236 @@ This document outlines the architecture for:
                                                               │
                                                               ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                        ASYNC ENRICHMENT PIPELINE                            │
+│                     PRODUCT INTELLIGENCE PIPELINE                           │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐                │
-│  │ Image        │     │ Attribute    │     │ New Arrival  │                │
-│  │ Scanner      │────▶│ Writer       │────▶│ Matcher      │                │
-│  │ (CLIP)       │     │ (ClickHouse) │     │              │                │
-│  └──────────────┘     └──────────────┘     └──────────────┘                │
-│         │                    │                    │                         │
-│         ▼                    ▼                    ▼                         │
-│  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐                │
-│  │ Detected:    │     │ TWCPRODUCT_  │     │ TWCNEW_      │                │
-│  │ - pattern    │     │ ENRICHMENT   │     │ ARRIVAL_     │                │
-│  │ - neckline   │     │ (new table)  │     │ ALERTS       │                │
-│  │ - colors     │     │              │     │ (new table)  │                │
-│  └──────────────┘     └──────────────┘     └──────────────┘                │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐   │
+│  │ Tag          │  │ Description  │  │ Image        │  │ Behavior     │   │
+│  │ Processor    │  │ Parser       │  │ Scanner      │  │ Signals      │   │
+│  │ (retailer    │  │ (HTML→text)  │  │ (CLIP)       │  │ (purchases)  │   │
+│  │ tags)        │  │              │  │              │  │              │   │
+│  └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘   │
+│         │                 │                 │                 │            │
+│         ▼                 ▼                 ▼                 ▼            │
+│  ┌─────────────────────────────────────────────────────────────────────┐  │
+│  │                     TWCPRODUCT_ENRICHMENT                           │  │
+│  │  Unified product attributes from all sources                        │  │
+│  └─────────────────────────────────────────────────────────────────────┘  │
+│                                    │                                       │
+│                                    ▼                                       │
+│  ┌─────────────────────────────────────────────────────────────────────┐  │
+│  │                     New Arrival Matcher                             │  │
+│  │  Query TWCCUSTOMER_PREFERENCE_INDEX for matching customers          │  │
+│  └─────────────────────────────────────────────────────────────────────┘  │
+│                                    │                                       │
+│                                    ▼                                       │
+│  ┌─────────────────────────────────────────────────────────────────────┐  │
+│  │                     TWCNEW_ARRIVAL_ALERTS                           │  │
+│  └─────────────────────────────────────────────────────────────────────┘  │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Component 1: Image Scanner Service
+## Component 1: Product Tag Processing
 
 ### Purpose
-Asynchronously process product images to detect visual attributes not provided by Shopify.
+Retailer tags from Shopify are the most reliable source of product attributes. These should be the primary signal.
 
-### Detected Attributes
+### Tag Sources
 
-| Attribute | Values | Detection Method |
-|-----------|--------|------------------|
-| `pattern` | solid, striped, floral, checkered, polka_dot, animal_print, geometric, abstract | CLIP zero-shot |
-| `dominant_colors` | Array of detected colors | CLIP + color extraction |
-| `neckline` | crew, v_neck, scoop, off_shoulder, halter, collared, turtleneck | CLIP zero-shot |
-| `sleeve_length` | sleeveless, short, three_quarter, long | CLIP zero-shot |
-| `fit` | fitted, relaxed, oversized | CLIP zero-shot |
-| `length` | cropped, regular, midi, maxi | CLIP zero-shot (for dresses/skirts) |
+| Source | Examples | Reliability |
+|--------|----------|-------------|
+| Shopify product tags | `floral`, `midi-dress`, `summer-2024` | High |
+| Shopify product type | `Dresses`, `Tops` | High |
+| Shopify vendor | `Zimmermann`, `Aje` | High |
+| Shopify metafields | Custom retailer fields | High |
+| Collection membership | `New Arrivals`, `Sale` | High |
+
+### Schema for Tags
+
+```sql
+-- Add tags column to TWCVARIANT if not present
+ALTER TABLE TWCVARIANT
+    ADD COLUMN IF NOT EXISTS tags Array(String) DEFAULT [];
+
+-- Or store in enrichment table for unified access
+```
+
+### Tag Normalization
+
+```python
+class TagProcessor:
+    """Normalizes and categorizes retailer tags."""
+
+    TAG_MAPPINGS = {
+        # Pattern tags
+        'floral': ('pattern', 'floral'),
+        'florals': ('pattern', 'floral'),
+        'stripe': ('pattern', 'striped'),
+        'striped': ('pattern', 'striped'),
+        'check': ('pattern', 'checkered'),
+        'polka': ('pattern', 'polka_dot'),
+
+        # Color tags
+        'navy': ('color', 'navy'),
+        'black': ('color', 'black'),
+        'white': ('color', 'white'),
+
+        # Style tags
+        'midi': ('length', 'midi'),
+        'maxi': ('length', 'maxi'),
+        'mini': ('length', 'mini'),
+    }
+
+    def process_tags(self, tags: list[str]) -> dict[str, list[str]]:
+        """Convert raw tags to categorized attributes."""
+        result = defaultdict(list)
+
+        for tag in tags:
+            normalized = tag.lower().strip().replace('-', '_')
+            if normalized in self.TAG_MAPPINGS:
+                category, value = self.TAG_MAPPINGS[normalized]
+                result[category].append(value)
+            else:
+                # Keep unmapped tags for future analysis
+                result['other'].append(normalized)
+
+        return dict(result)
+```
+
+---
+
+## Component 2: Description Parsing
+
+### Purpose
+Product descriptions contain valuable attribute information. Parse HTML descriptions to extract searchable text and attributes.
+
+### Challenge
+Descriptions are often long HTML strings with:
+- Marketing copy
+- Care instructions
+- Fit information
+- Material details
+
+### Schema for Descriptions
+
+```sql
+-- Store parsed description text (not raw HTML)
+ALTER TABLE TWCVARIANT
+    ADD COLUMN IF NOT EXISTS descriptionText String DEFAULT '',
+    ADD COLUMN IF NOT EXISTS descriptionKeywords Array(String) DEFAULT [];
+
+-- Or in enrichment table
+```
+
+### Description Parser
+
+```python
+class DescriptionParser:
+    """Parses product descriptions to extract text and keywords."""
+
+    def parse(self, html_description: str) -> ParsedDescription:
+        """
+        Parse HTML description to extract:
+        - Clean text (for search/matching)
+        - Keywords (for attribute inference)
+        """
+        # Strip HTML
+        text = self._strip_html(html_description)
+
+        # Extract keywords
+        keywords = self._extract_keywords(text)
+
+        # Extract specific attributes
+        attributes = self._extract_attributes(text)
+
+        return ParsedDescription(
+            text=text,
+            keywords=keywords,
+            fit=attributes.get('fit'),
+            fabric=attributes.get('fabric'),
+            occasion=attributes.get('occasion'),
+        )
+
+    def _strip_html(self, html: str) -> str:
+        """Remove HTML tags, decode entities."""
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, 'html.parser')
+        return soup.get_text(separator=' ', strip=True)
+
+    def _extract_keywords(self, text: str) -> list[str]:
+        """Extract significant keywords from description."""
+        # Common fashion keywords to look for
+        FASHION_KEYWORDS = {
+            # Fit
+            'fitted', 'relaxed', 'oversized', 'tailored', 'slim',
+            # Fabric
+            'silk', 'cotton', 'linen', 'wool', 'cashmere', 'viscose',
+            # Occasion
+            'casual', 'formal', 'evening', 'workwear', 'wedding',
+            # Style
+            'bohemian', 'minimalist', 'classic', 'romantic',
+        }
+
+        words = text.lower().split()
+        return [w for w in words if w in FASHION_KEYWORDS]
+
+    def _extract_attributes(self, text: str) -> dict[str, str]:
+        """Extract structured attributes from description text."""
+        attributes = {}
+
+        # Fit detection
+        if any(w in text.lower() for w in ['fitted', 'figure-hugging', 'body-con']):
+            attributes['fit'] = 'fitted'
+        elif any(w in text.lower() for w in ['relaxed', 'loose', 'easy']):
+            attributes['fit'] = 'relaxed'
+        elif any(w in text.lower() for w in ['oversized', 'boxy']):
+            attributes['fit'] = 'oversized'
+
+        return attributes
+```
+
+### Use in Recommendations
+
+Parsed description text enables:
+1. **Keyword matching** - "Bohemian floral dress" matches customer interest in bohemian style
+2. **Fabric preferences** - Customer prefers silk → prioritize silk products
+3. **Occasion matching** - Customer shopping for wedding → surface "wedding guest" products
+
+---
+
+## Component 3: Image Scanner Service
+
+### Purpose
+Asynchronously process product images to detect visual attributes NOT already available from tags or descriptions. Image analysis supplements existing data.
+
+### CLIP Accuracy Expectations
+
+**Realistic assessment:** CLIP zero-shot is useful for prototyping but has limitations for production fashion attributes.
+
+| Attribute | CLIP Accuracy | Notes |
+|-----------|---------------|-------|
+| Pattern | Medium-High | Florals, stripes, solids work well |
+| Dominant colors | Medium-High | Broad colors reliable |
+| Neckline | Low-Medium | Pose, layering, crop affect results |
+| Sleeve length | Low-Medium | Photography angle matters |
+| Fit | Low | Very hard from single image |
+| Length | Low-Medium | Model pose affects detection |
+
+**MVP Scope:** For Phase 1, only use CLIP for **pattern** and **dominant colors** where confidence is high. Store but don't act on other attributes until validated.
+
+### Detected Attributes (MVP)
+
+| Attribute | Values | Detection Method | MVP Use |
+|-----------|--------|------------------|---------|
+| `pattern` | solid, striped, floral, checkered, polka_dot, animal_print | CLIP zero-shot | ✅ Active |
+| `dominant_colors` | Array of detected colors | CLIP + color extraction | ✅ Active |
+| `neckline` | crew, v_neck, scoop, off_shoulder, halter, collared | CLIP zero-shot | ⏸️ Store only |
+| `sleeve_length` | sleeveless, short, three_quarter, long | CLIP zero-shot | ⏸️ Store only |
+| `fit` | fitted, relaxed, oversized | CLIP zero-shot | ⏸️ Store only |
+| `length` | cropped, regular, midi, maxi | CLIP zero-shot | ⏸️ Store only |
 
 ### Technology Choice: CLIP
 
@@ -68,7 +267,11 @@ Asynchronously process product images to detect visual attributes not provided b
 - Natural language queries: "Is this a striped pattern?"
 - Open source (MIT license)
 - Runs locally or via Hugging Face Inference API
-- Handles fashion domain well
+
+**Limitations:**
+- Photography style, pose, layering affect results
+- Nuanced fashion attributes (fit, neckline) are unreliable
+- Use as candidate enrichment, not truth
 
 **Alternative:** Fine-tuned ResNet on fashion dataset for higher accuracy on specific attributes, but requires labeled training data.
 
@@ -136,33 +339,54 @@ class ImageScanner:
 ### Database Schema
 
 ```sql
--- New table for enriched product attributes
+-- Unified product enrichment table (all signal sources)
 CREATE TABLE IF NOT EXISTS TWCPRODUCT_ENRICHMENT (
     tenantId String,
     productId String,
     variantId String,
 
-    -- Detected attributes
-    pattern String DEFAULT '',           -- 'striped', 'floral', 'solid', etc.
-    dominantColors Array(String),         -- ['navy', 'white', 'gold']
-    neckline String DEFAULT '',           -- 'v_neck', 'crew', etc.
-    sleeveLength String DEFAULT '',       -- 'sleeveless', 'short', 'long'
-    fit String DEFAULT '',                -- 'fitted', 'relaxed', 'oversized'
-    length String DEFAULT '',             -- 'cropped', 'midi', 'maxi'
+    -- Source signals
+    sourceType String DEFAULT 'image',    -- 'tag', 'description', 'image', 'manual'
 
-    -- Confidence scores (0-1)
-    patternConfidence Float32 DEFAULT 0,
+    -- Detected attributes (MVP: pattern + colors active, others stored only)
+    pattern String DEFAULT '',            -- 'striped', 'floral', 'solid', etc.
+    dominantColors Array(String),         -- ['navy', 'white', 'gold']
+    neckline String DEFAULT '',           -- 'v_neck', 'crew', etc. (store only for MVP)
+    sleeveLength String DEFAULT '',       -- 'sleeveless', 'short', 'long' (store only)
+    fit String DEFAULT '',                -- 'fitted', 'relaxed', 'oversized' (store only)
+    length String DEFAULT '',             -- 'cropped', 'midi', 'maxi' (store only)
+
+    -- From tags/description parsing
+    retailerTags Array(String),           -- Original tags from Shopify
+    parsedKeywords Array(String),         -- Keywords from description
+    fabric String DEFAULT '',             -- Extracted from description
+    occasion String DEFAULT '',           -- Extracted from description
+
+    -- Confidence scores (per attribute)
+    confidenceScores Map(String, Float32), -- {'pattern': 0.92, 'color': 0.87, ...}
+
+    -- Model/version tracking (critical for re-processing)
+    modelVersion String DEFAULT 'clip-vit-base-patch32',
+    attributeVersion String DEFAULT 'v1',  -- Schema version for attributes
+    rawModelOutput String DEFAULT '',      -- JSON of raw model response (for debugging)
+    sourceImageHash String DEFAULT '',     -- Hash of processed image (detect changes)
 
     -- Processing metadata
     imageUrl String,
-    modelVersion String DEFAULT 'clip-vit-base-patch32',
     processedAt DateTime DEFAULT now(),
     processingStatus String DEFAULT 'pending',  -- 'pending', 'completed', 'failed'
     errorMessage String DEFAULT ''
 
 ) ENGINE = ReplacingMergeTree(processedAt)
-ORDER BY (tenantId, productId, variantId);
+ORDER BY (tenantId, productId, variantId, sourceType);
 ```
+
+**Schema notes:**
+- `attributeVersion` - Track which schema version attributes use; enables re-processing when model changes
+- `confidenceScores` - Map allows per-attribute confidence without column explosion
+- `sourceImageHash` - Detect when image changed and re-enrichment needed
+- `rawModelOutput` - Debug what the model actually returned
+- `sourceType` - Single table for all enrichment sources (tags, description, image)
 
 ---
 
@@ -180,6 +404,40 @@ A product matches a customer if:
 4. **Pattern match** - Product pattern in customer's preferred patterns (NEW)
 5. **Style match** - Product style in customer's preferred styles
 6. **NOT in dislikes** - No attributes match customer dislikes
+
+### Customer Preference Index
+
+Matching products to customers at scale requires an inverted index. Scanning all customers for each product is expensive.
+
+```sql
+-- Inverted index: lookup customers by preference
+CREATE TABLE IF NOT EXISTS TWCCUSTOMER_PREFERENCE_INDEX (
+    tenantId String,
+    preferenceType String,               -- 'brand', 'pattern', 'color', 'category'
+    preferenceValue String,              -- 'Zimmermann', 'floral', 'navy', 'Dresses'
+    customerId String,
+    source String,                       -- 'explicit', 'auto'
+    confidence Float32 DEFAULT 1.0,      -- 1.0 for explicit, lower for auto
+    createdAt DateTime DEFAULT now()
+) ENGINE = ReplacingMergeTree(createdAt)
+ORDER BY (tenantId, preferenceType, preferenceValue, customerId);
+```
+
+**Usage:** When a floral Zimmermann dress arrives:
+
+```sql
+-- Find customers who like florals OR Zimmermann
+SELECT DISTINCT customerId
+FROM TWCCUSTOMER_PREFERENCE_INDEX
+WHERE tenantId = 'viktoria-woods'
+  AND (
+    (preferenceType = 'pattern' AND preferenceValue = 'floral')
+    OR (preferenceType = 'brand' AND preferenceValue = 'Zimmermann')
+    OR (preferenceType = 'category' AND preferenceValue = 'Dresses')
+  )
+```
+
+Then for each customer, calculate detailed match score.
 
 ### Match Scoring
 
@@ -228,11 +486,95 @@ def calculate_match_score(product: Product, customer: Customer) -> float:
 
 ### Alert Generation
 
-Only generate alerts when:
-- Match score > threshold (e.g., 0.6)
+**Score threshold alone is not enough.** A score over 0.6 may be too permissive if a product only matches broad attributes like category + color. This creates staff fatigue.
+
+**Alert creation requires BOTH:**
+1. Score >= threshold (0.6)
+2. At least one **strong signal**:
+
+| Strong Signal | Example |
+|---------------|---------|
+| Explicit brand match | Customer explicitly likes Zimmermann, product is Zimmermann |
+| Explicit category + pattern | Customer likes Dresses AND florals, product is floral dress |
+| Wishlist-derived | Product matches wishlist item attributes |
+| VIP + strong product match | VIP customer with score >= 0.75 |
+
+```python
+def should_create_alert(
+    match_score: float,
+    match_details: MatchDetails,
+    customer: Customer,
+) -> bool:
+    """Determine if alert should be created."""
+    if match_score < 0.6:
+        return False
+
+    # Must have at least one strong signal
+    has_strong_signal = any([
+        match_details.has_explicit_brand_match,
+        match_details.has_explicit_category_and_pattern_match,
+        match_details.has_wishlist_signal,
+        customer.is_vip and match_score >= 0.75,
+    ])
+
+    if not has_strong_signal:
+        return False
+
+    return True
+```
+
+### Alert Suppression Rules
+
+Do **NOT** create alert if:
+
+| Rule | Reason |
+|------|--------|
+| Same product already alerted | Dedupe |
+| Same brand/category alerted within 48h | Prevent spam |
+| Customer dismissed recent alerts (3+) | Fatigue signal |
+| Product low stock or unavailable in customer size | Frustration |
+| Customer in cooldown period | Rate limiting |
+
+```python
+def check_suppression(
+    tenant_id: str,
+    customer_id: str,
+    product_id: str,
+) -> Optional[str]:
+    """Return suppression reason or None if alert is allowed."""
+
+    # Same product already alerted
+    if alert_exists(tenant_id, customer_id, product_id):
+        return "duplicate_product"
+
+    # Same brand/category recently
+    recent_alerts = get_recent_alerts(tenant_id, customer_id, hours=48)
+    product = get_product(tenant_id, product_id)
+    for alert in recent_alerts:
+        if alert.product_brand == product.brand and alert.product_category == product.category:
+            return "recent_similar"
+
+    # Customer dismissing alerts
+    dismissed_count = count_dismissed_alerts(tenant_id, customer_id, days=14)
+    if dismissed_count >= 3:
+        return "customer_fatigue"
+
+    # Size availability
+    if not size_available_for_customer(product, customer_id):
+        return "size_unavailable"
+
+    # Cooldown
+    last_alert = get_last_alert(tenant_id, customer_id)
+    if last_alert and last_alert.created_at > now() - timedelta(hours=72):
+        return "cooldown"
+
+    return None
+```
+
+### Basic Requirements (still apply)
+
 - Customer has opted into alerts (or is VIP)
 - Product is in stock
-- Customer hasn't been alerted recently (cooldown period)
 
 ### Database Schema
 
@@ -244,30 +586,63 @@ CREATE TABLE IF NOT EXISTS TWCNEW_ARRIVAL_ALERTS (
     customerId String,
     productId String,
 
+    -- Dedupe key (critical for preventing duplicates)
+    dedupeKey String,                      -- tenantId + customerId + productId + alertType
+
     -- Match details
     matchScore Float32,                    -- 0-1, how well product matches preferences
     matchReasons Array(String),            -- ['Matches floral preference', 'Favorite brand']
+    strongSignals Array(String),           -- ['explicit_brand', 'wishlist'] - why alert was allowed
+    priority Float32 DEFAULT 0.5,          -- 0-1, for sorting alerts by importance
 
     -- Alert metadata
     collectionName String DEFAULT '',      -- 'Summer 2024', 'Resort Collection'
     alertType String DEFAULT 'new_arrival', -- 'new_arrival', 'back_in_stock', 'price_drop'
+    expiresAt DateTime DEFAULT now() + INTERVAL 14 DAY,  -- Auto-expire old alerts
 
     -- Status tracking
-    status String DEFAULT 'pending',       -- 'pending', 'sent', 'viewed', 'dismissed', 'converted'
+    status String DEFAULT 'pending',       -- 'pending', 'sent', 'viewed', 'dismissed', 'converted', 'expired'
     createdAt DateTime DEFAULT now(),
     sentAt Nullable(DateTime),
     viewedAt Nullable(DateTime),
     convertedAt Nullable(DateTime),
+    suppressionReason String DEFAULT '',   -- If suppressed, why
+
+    -- Store assignment
+    assignedStore String DEFAULT '',       -- Store responsible for outreach
+    assignedStaffId String DEFAULT '',     -- Specific staff member (optional)
 
     -- Delivery channel
-    channel String DEFAULT ''              -- 'app', 'email', 'sms', 'staff_app'
+    channel String DEFAULT 'staff_app'     -- 'app', 'email', 'sms', 'staff_app'
 
 ) ENGINE = ReplacingMergeTree(createdAt)
-ORDER BY (tenantId, customerId, createdAt);
+ORDER BY (tenantId, dedupeKey);
 
--- Index for fetching pending alerts per customer
+-- Indexes
 ALTER TABLE TWCNEW_ARRIVAL_ALERTS ADD INDEX idx_pending (status) TYPE set(100) GRANULARITY 4;
+ALTER TABLE TWCNEW_ARRIVAL_ALERTS ADD INDEX idx_store (assignedStore) TYPE set(100) GRANULARITY 4;
+ALTER TABLE TWCNEW_ARRIVAL_ALERTS ADD INDEX idx_expires (expiresAt) TYPE minmax GRANULARITY 4;
 ```
+
+**Schema notes:**
+- `dedupeKey` - Prevents duplicate alerts from retries or catch-up jobs
+- `expiresAt` - Auto-expire alerts after 14 days; scheduled job marks them `expired`
+- `priority` - Sort alerts by importance (VIP, high match score)
+- `assignedStore` / `assignedStaffId` - For store-level task assignment
+- `strongSignals` - Track why alert passed the strong signal requirement
+
+### Workflow State Consideration
+
+ClickHouse is optimized for analytics, not transactional workflow state. For MVP, `ReplacingMergeTree` works if:
+- UI tolerates eventual consistency on status changes
+- High-volume status updates are acceptable
+
+For production scale, consider:
+| Option | Use Case |
+|--------|----------|
+| Keep in ClickHouse | MVP, low volume, analytics-first |
+| DynamoDB/Postgres for state | High-volume workflow with reliable state |
+| Event sourcing | Write events to ClickHouse, materialize state elsewhere |
 
 ### Alert Message Generation
 
@@ -536,32 +911,46 @@ GET /api/v1/new-arrivals/{retailer_id}/{customer_id}
 
 ## Implementation Phases
 
-### Phase 1: Image Enrichment (Foundation)
-- [ ] Create TWCPRODUCT_ENRICHMENT table
+### Phase 1: Product Intelligence Foundation
+- [ ] Add `tags` and `descriptionText` columns to TWCVARIANT
+- [ ] Create TWCPRODUCT_ENRICHMENT table (unified schema)
+- [ ] Build TagProcessor for retailer tag normalization
+- [ ] Build DescriptionParser for HTML → text extraction
+- [ ] Store model version and confidence scores from day one
+
+### Phase 2: Image Enrichment (MVP: Pattern + Colors Only)
 - [ ] Build ImageScanner service with CLIP
-- [ ] Event-driven processing for new products
+- [ ] Detect pattern and dominant colors only (high confidence)
+- [ ] Store but don't act on other attributes (neckline, fit, etc.)
+- [ ] Event-driven processing + catch-up job
 - [ ] Backfill endpoint for existing catalog
-- [ ] Add enriched attributes to product queries
 
-### Phase 2: Preference Model Updates
-- [ ] Add PreferenceSource.AUTO enum value
-- [ ] Add `pattern` to CustomerPreferences
-- [ ] Add `patterns` to CustomerDislikes
-- [ ] Update scoring to include pattern matching
-- [ ] Update matches_dislikes() for patterns
+### Phase 3: Customer Preference Index
+- [ ] Create TWCCUSTOMER_PREFERENCE_INDEX table
+- [ ] Populate from explicit preferences
+- [ ] Populate from inferred preferences (active, high confidence)
+- [ ] Scheduled job to sync index
 
-### Phase 3: New Arrival Matcher
-- [ ] Create TWCNEW_ARRIVAL_ALERTS table
-- [ ] Build NewArrivalMatcher service
-- [ ] Alert generation logic with scoring
-- [ ] Cooldown/deduplication logic
+### Phase 4: New Arrival Matcher
+- [ ] Create TWCNEW_ARRIVAL_ALERTS table (with dedupe, expiry)
+- [ ] Build NewArrivalMatcher with strong signal requirements
+- [ ] Implement suppression rules
+- [ ] Store-level task assignment
 - [ ] API endpoints for alert management
 
-### Phase 4: Integration & UI
-- [ ] Staff app: Display alerts per customer
-- [ ] Staff app: Show auto-inferred preferences differently
+### Phase 5: Inferred Preferences
+- [ ] Create TWCINFERRED_PREFERENCES table
+- [ ] Build PreferenceInferrer from purchase history
+- [ ] Implement decay scoring (scheduled job)
+- [ ] Implement negative feedback from dismissed alerts
+- [ ] Staff confirm/dismiss workflow
+
+### Phase 6: Integration & UI
+- [ ] Staff app: Display alerts per store
+- [ ] Staff app: Show auto-inferred preferences with different styling
 - [ ] Message templates for new arrival outreach
 - [ ] Conversion tracking
+- [ ] Alert expiry job
 
 ---
 
@@ -572,17 +961,27 @@ GET /api/v1/new-arrivals/{retailer_id}/{customer_id}
 IMAGE_SCANNER_MODEL = "openai/clip-vit-base-patch32"
 IMAGE_SCANNER_BATCH_SIZE = 100
 IMAGE_SCANNER_MIN_CONFIDENCE = 0.7
+IMAGE_SCANNER_ACTIVE_ATTRIBUTES = ['pattern', 'dominant_colors']  # MVP subset
 
 # New arrival matching
 NEW_ARRIVAL_MATCH_THRESHOLD = 0.6      # Minimum score to create alert
+NEW_ARRIVAL_REQUIRE_STRONG_SIGNAL = True  # Must have brand/pattern/wishlist match
 NEW_ARRIVAL_LOOKBACK_DAYS = 7          # Products added in last N days
 NEW_ARRIVAL_COOLDOWN_HOURS = 72        # Min hours between alerts to same customer
 NEW_ARRIVAL_MAX_ALERTS_PER_DAY = 3     # Max alerts per customer per day
+NEW_ARRIVAL_EXPIRY_DAYS = 14           # Auto-expire old alerts
+NEW_ARRIVAL_SIMILAR_COOLDOWN_HOURS = 48  # Min hours between similar alerts
+
+# Alert suppression
+ALERT_MAX_DISMISSED_BEFORE_FATIGUE = 3  # Stop alerting after 3 dismissals
+ALERT_REQUIRE_SIZE_AVAILABLE = True     # Only alert if customer's size in stock
 
 # Auto preferences
 AUTO_PREF_MIN_PURCHASES = 3            # Purchases to infer category preference
 AUTO_PREF_MIN_VIEWS = 5                # Views to infer brand interest
 AUTO_PREF_CONFIDENCE_THRESHOLD = 0.8   # Confidence to auto-add preference
+AUTO_PREF_DECAY_HALF_LIFE_DAYS = 180   # 6 months for preferences to halve
+AUTO_PREF_MIN_CONFIDENCE_TO_USE = 0.2  # Below this, don't use preference
 ```
 
 ---
@@ -591,10 +990,16 @@ AUTO_PREF_CONFIDENCE_THRESHOLD = 0.8   # Confidence to auto-add preference
 
 | Question | Decision |
 |----------|----------|
+| **Primary enrichment source** | **Retailer tags and descriptions first.** CLIP is supplementary for attributes not in tags. |
+| **CLIP MVP scope** | **Pattern and colors only.** Other attributes (fit, neckline) stored but not used until validated. |
+| **Alert creation** | **Require strong signal, not just score.** Score >= 0.6 AND (brand match OR category+pattern OR wishlist OR VIP). |
+| **Alert spam prevention** | **Dedupe + suppression from day one.** Same product, similar alerts, customer fatigue, size availability. |
 | **Alert delivery** | Staff app only (via existing product alerts). Push/email is future consideration. |
 | **Collection grouping** | Per-product alerts for MVP. Grouped alerts ("3 new pieces...") is nice-to-have for later. |
 | **Auto preference confirmation** | Not required. Display as "Auto generated" in FE; staff can optionally confirm but most won't. |
 | **Auto preference weighting** | **Lower weight than explicit preferences.** Auto-inferred signals are weaker than customer/staff stated preferences. |
+| **Preference decay** | **180-day half-life.** Preferences decay over time; ignore if too old. |
+| **Workflow state storage** | **ClickHouse for MVP.** Consider operational store (DynamoDB/Postgres) if workflow reliability issues arise. |
 
 ---
 
@@ -770,10 +1175,15 @@ CREATE TABLE IF NOT EXISTS TWCINFERRED_PREFERENCES (
     preferenceValue String,     -- 'floral', 'navy', 'Zimmermann', 'Dresses'
     isLike UInt8 DEFAULT 1,     -- 1 = like, 0 = dislike
 
-    -- Inference source
+    -- Inference source and evidence
     inferenceSource String,     -- 'purchase_history', 'browsing', 'wishlist', 'clip_analysis'
-    confidence Float32,         -- 0-1 confidence score
+    confidence Float32,         -- 0-1 base confidence score
     evidenceCount UInt32,       -- Number of supporting data points (e.g., 5 purchases)
+    evidenceRefs Array(String), -- ['order:123', 'order:456'] - for explainability
+    lastEvidenceAt DateTime,    -- When last evidence occurred (for decay)
+
+    -- Decay tracking
+    decayScore Float32 DEFAULT 1.0,  -- Decayed confidence (recalculated periodically)
 
     -- Metadata
     firstInferredAt DateTime DEFAULT now(),
@@ -789,6 +1199,11 @@ CREATE TABLE IF NOT EXISTS TWCINFERRED_PREFERENCES (
 ) ENGINE = ReplacingMergeTree(lastUpdatedAt)
 ORDER BY (tenantId, customerId, preferenceType, preferenceValue);
 ```
+
+**Schema notes:**
+- `evidenceRefs` - Array of references for explainability ("Why do we think she likes florals?")
+- `lastEvidenceAt` - When the last supporting evidence occurred; drives decay
+- `decayScore` - Pre-calculated decayed confidence; updated by scheduled job
 
 ### Why Separate Table?
 
@@ -869,6 +1284,98 @@ If a retailer DOES want to show auto-inferred preferences in the FE (with differ
 }
 ```
 
+### Preference Decay and Negative Feedback
+
+Inferred preferences should decay if they become stale. Someone who bought florals 18 months ago may not still want floral alerts.
+
+#### Time Decay
+
+```python
+def calculate_decay_score(
+    base_confidence: float,
+    last_evidence_at: datetime,
+    half_life_days: int = 180,
+) -> float:
+    """
+    Apply exponential decay to confidence based on time since last evidence.
+
+    Half-life of 180 days means:
+    - 6 months old: 50% of original confidence
+    - 12 months old: 25% of original confidence
+    - 18 months old: 12.5% of original confidence
+    """
+    days_since = (datetime.now() - last_evidence_at).days
+    decay_factor = 0.5 ** (days_since / half_life_days)
+    return base_confidence * decay_factor
+
+
+# Scheduled job to update decay scores
+def update_decay_scores():
+    """Run daily to recalculate decayed confidence."""
+    client.command("""
+        ALTER TABLE TWCINFERRED_PREFERENCES
+        UPDATE decayScore = confidence * pow(0.5, dateDiff('day', lastEvidenceAt, now()) / 180)
+        WHERE isActive = 1 AND staffConfirmed = 0
+    """)
+```
+
+#### Negative Feedback
+
+Treat dismissed/ignored alerts as feedback against the inferred preference:
+
+```python
+def apply_negative_feedback(
+    tenant_id: str,
+    customer_id: str,
+    product_attributes: dict,
+    feedback_type: str,  # 'dismissed', 'ignored'
+):
+    """
+    Reduce confidence in inferred preferences when customer ignores alerts.
+
+    Rules:
+    - Alert dismissed: reduce matching preference confidence by 20%
+    - 3+ ignored alerts for same attribute: reduce by 30%
+    - Staff dismisses auto preference: deactivate entirely
+    """
+    penalty = 0.2 if feedback_type == 'dismissed' else 0.1
+
+    for attr_type, attr_value in product_attributes.items():
+        pref = get_inferred_preference(tenant_id, customer_id, attr_type, attr_value)
+        if pref and not pref.staff_confirmed:
+            new_confidence = max(0.1, pref.confidence * (1 - penalty))
+            update_preference_confidence(pref.id, new_confidence)
+
+            # Deactivate if confidence drops too low
+            if new_confidence < 0.2:
+                deactivate_preference(pref.id)
+
+
+# Track ignored alerts
+def count_ignored_for_attribute(
+    tenant_id: str,
+    customer_id: str,
+    attr_type: str,
+    attr_value: str,
+    days: int = 30,
+) -> int:
+    """Count how many alerts matching this attribute were ignored."""
+    return client.query("""
+        SELECT count(*)
+        FROM TWCNEW_ARRIVAL_ALERTS
+        WHERE tenantId = {tenant_id:String}
+          AND customerId = {customer_id:String}
+          AND status IN ('expired', 'dismissed')
+          AND has(matchReasons, {reason:String})
+          AND createdAt >= now() - INTERVAL {days:UInt32} DAY
+    """, parameters={
+        'tenant_id': tenant_id,
+        'customer_id': customer_id,
+        'reason': f'{attr_type}:{attr_value}',
+        'days': days,
+    }).first_row[0]
+```
+
 ### Populating Inferred Preferences
 
 ```python
@@ -912,10 +1419,31 @@ class PreferenceInferrer:
 
 ---
 
+## Design Review Feedback (Incorporated)
+
+Following feedback was incorporated into this design:
+
+| Concern | Resolution |
+|---------|------------|
+| **CLIP accuracy for fashion attributes** | Narrowed MVP to pattern + colors only; store but don't act on fit, neckline, length |
+| **Product tags underutilized** | Added Tag Processor as primary signal; CLIP supplements missing attributes |
+| **Descriptions not captured** | Added Description Parser; store parsed text in TWCVARIANT |
+| **Alert spam risk** | Added strong signal requirement + suppression rules + dedupe keys |
+| **ClickHouse for workflow state** | Acknowledged limitation; documented options for production scale |
+| **Matching query scale** | Added TWCCUSTOMER_PREFERENCE_INDEX inverted index |
+| **Preference decay** | Added decayScore with 180-day half-life; scheduled job to update |
+| **Negative feedback** | Reduce confidence when alerts dismissed/ignored |
+| **Schema versioning** | Added attributeVersion, rawModelOutput, sourceImageHash to enrichment |
+| **Alert deduplication** | Added dedupeKey, expiresAt, strongSignals to alerts |
+| **Evidence tracking** | Added evidenceRefs, lastEvidenceAt to inferred preferences |
+
+---
+
 ## Open Questions
 
 1. **VIP prioritization:** Different thresholds for VIP vs. regular customers?
 2. **Image scanner hosting:** Self-hosted GPU, or cloud inference API (Hugging Face/Replicate)?
+3. **Description HTML complexity:** How complex are the HTML descriptions? May need robust parsing.
 
 ---
 
@@ -923,7 +1451,8 @@ class PreferenceInferrer:
 
 | Component | Dependency | Notes |
 |-----------|------------|-------|
+| Description Parser | `beautifulsoup4`, `lxml` | HTML parsing |
 | Image Scanner | `transformers`, `torch`, `Pillow` | CLIP model |
 | Image Scanner | GPU (optional) | CPU works but slower (~2s vs ~0.2s per image) |
 | Event bus | SQS/SNS or Kafka | For async processing |
-| Scheduler | K8s CronJob or similar | For batch backfill |
+| Scheduler | K8s CronJob or similar | For batch backfill, decay updates, expiry |
