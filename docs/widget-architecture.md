@@ -631,13 +631,59 @@ class FallbackChain:
 
 ## Identity Resolution
 
-Match anonymous visitors to customers when they log in.
+The widget receives identity from the embed and passes it to TWC Core APIs.
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                          WEBSITE                                │
+│                                                                 │
+│  Widget Embed                                                   │
+│  ├── Reads customer_id from page (if logged in)                │
+│  ├── Generates/reads anonymous_id from localStorage            │
+│  └── Passes both to Widget API                                  │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                     TWC PLATFORM                                │
+│                                                                 │
+│  Widget API (this service)                                      │
+│  ├── Receives customer_id + anonymous_id                        │
+│  ├── Calls TWC Core REST APIs for customer data                │
+│  └── Returns recommendations                                    │
+│                                                                 │
+│  TWC Core REST APIs (existing)                                  │
+│  ├── GET /customers/{id} → Customer profile from DynamoDB      │
+│  ├── GET /wishlists/{customer_id} → Wishlist items             │
+│  ├── POST /wishlists/{customer_id}/items → Add to wishlist     │
+│  ├── POST /identity/merge → Merge anonymous to customer        │
+│  └── etc.                                                       │
+│                                                                 │
+│  Storage                                                        │
+│  ├── DynamoDB (customers, wishlists, preferences)              │
+│  └── ClickHouse (analytics, behavior, recommendations)          │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Widget Identity Flow
 
 ```python
-class IdentityResolver:
-    """Resolve and merge visitor identities."""
+class WidgetIdentityResolver:
+    """
+    Resolve identity for widget requests.
 
-    def resolve(
+    This service does NOT manage customers or wishlists directly.
+    All mutations go through TWC Core REST APIs.
+    """
+
+    def __init__(self, twc_core_client: TWCCoreClient):
+        self.twc_core = twc_core_client
+
+    async def resolve(
         self,
         tenant_id: str,
         customer_id: Optional[str],
@@ -648,79 +694,147 @@ class IdentityResolver:
         Resolve identity from available signals.
 
         Priority:
-        1. customer_id (TWC internal)
-        2. shopify_customer_id → lookup TWC customer_id
-        3. anonymous_id → check if linked to customer
-        4. anonymous_id only (anonymous visitor)
+        1. customer_id (TWC internal) → fetch from Core API
+        2. shopify_customer_id → lookup via Core API
+        3. anonymous_id only → limited recommendations (trending, etc.)
         """
         if customer_id:
+            # Fetch full customer profile from TWC Core
+            customer = await self.twc_core.get_customer(tenant_id, customer_id)
             return ResolvedIdentity(
                 customer_id=customer_id,
+                customer=customer,
                 anonymous_id=anonymous_id,
                 is_anonymous=False,
             )
 
         if shopify_customer_id:
-            customer_id = self.lookup_by_shopify_id(tenant_id, shopify_customer_id)
-            if customer_id:
-                # Link anonymous_id to customer for future
-                if anonymous_id:
-                    self.link_anonymous_to_customer(anonymous_id, customer_id)
-                return ResolvedIdentity(
-                    customer_id=customer_id,
-                    anonymous_id=anonymous_id,
-                    is_anonymous=False,
-                )
-
-        if anonymous_id:
-            # Check if this anonymous_id was previously linked
-            customer_id = self.lookup_by_anonymous_id(anonymous_id)
-            if customer_id:
-                return ResolvedIdentity(
-                    customer_id=customer_id,
-                    anonymous_id=anonymous_id,
-                    is_anonymous=False,
-                )
-
-            return ResolvedIdentity(
-                customer_id=None,
-                anonymous_id=anonymous_id,
-                is_anonymous=True,
+            # Lookup TWC customer by Shopify ID via Core API
+            customer = await self.twc_core.get_customer_by_shopify_id(
+                tenant_id, shopify_customer_id
             )
+            if customer:
+                return ResolvedIdentity(
+                    customer_id=customer.customer_id,
+                    customer=customer,
+                    anonymous_id=anonymous_id,
+                    is_anonymous=False,
+                )
 
-        # No identity at all
+        # Anonymous visitor - can still get trending, contextual recommendations
         return ResolvedIdentity(
             customer_id=None,
-            anonymous_id=None,
+            customer=None,
+            anonymous_id=anonymous_id,
             is_anonymous=True,
         )
 
-    def merge_on_login(
-        self,
-        tenant_id: str,
-        customer_id: str,
-        anonymous_id: str,
-    ):
-        """
-        Merge anonymous browsing data to customer profile on login.
 
-        Merges:
-        - Browsing history
-        - Wishlist items
-        - Cart contents
-        """
-        # Merge anonymous wishlist to customer wishlist
-        anon_wishlist = self.get_anonymous_wishlist(anonymous_id)
-        for item in anon_wishlist:
-            self.add_to_customer_wishlist(customer_id, item)
+class TWCCoreClient:
+    """Client for TWC Core REST APIs."""
 
-        # Merge browsing history
-        anon_views = self.get_anonymous_views(anonymous_id)
-        self.append_to_customer_views(customer_id, anon_views)
+    def __init__(self, base_url: str, api_key: str):
+        self.base_url = base_url
+        self.api_key = api_key
 
-        # Link for future
-        self.link_anonymous_to_customer(anonymous_id, customer_id)
+    async def get_customer(
+        self, tenant_id: str, customer_id: str
+    ) -> Optional[Customer]:
+        """Fetch customer profile from TWC Core."""
+        response = await self._get(f"/customers/{tenant_id}/{customer_id}")
+        if response:
+            return Customer(**response)
+        return None
+
+    async def get_customer_by_shopify_id(
+        self, tenant_id: str, shopify_customer_id: str
+    ) -> Optional[Customer]:
+        """Lookup customer by Shopify customer ID."""
+        response = await self._get(
+            f"/customers/{tenant_id}/by-shopify/{shopify_customer_id}"
+        )
+        if response:
+            return Customer(**response)
+        return None
+
+    async def add_to_wishlist(
+        self, tenant_id: str, customer_id: str, product_id: str
+    ) -> bool:
+        """Add item to wishlist via TWC Core API."""
+        return await self._post(
+            f"/wishlists/{tenant_id}/{customer_id}/items",
+            {"product_id": product_id}
+        )
+
+    async def _get(self, path: str) -> Optional[dict]:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{self.base_url}{path}",
+                headers={"Authorization": f"Bearer {self.api_key}"}
+            )
+            if response.status_code == 200:
+                return response.json()
+            return None
+
+    async def _post(self, path: str, data: dict) -> bool:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{self.base_url}{path}",
+                json=data,
+                headers={"Authorization": f"Bearer {self.api_key}"}
+            )
+            return response.status_code in (200, 201)
 ```
+
+### Wishlist Actions from Widgets
+
+When a user clicks "Add to Wishlist" in a widget:
+
+```javascript
+// In Web Component
+async addToWishlist(productId) {
+  // Call TWC Core API directly (or via widget API proxy)
+  const response = await fetch(`${this.config.coreApiBase}/wishlists/items`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${this.config.publicKey}`,
+    },
+    body: JSON.stringify({
+      tenant_id: this.config.tenantId,
+      customer_id: this.config.customerId,  // null if anonymous
+      anonymous_id: this.getAnonymousId(),
+      product_id: productId,
+    }),
+  });
+
+  if (response.ok) {
+    this.trackWishlistAdd(productId);
+    // Update UI to show wishlisted state
+  }
+}
+```
+
+### Anonymous to Customer Merge
+
+Identity merge on login is handled by TWC Core, not this service:
+
+```
+User logs in on Shopify
+        │
+        ▼
+Shopify sends customer data to TWC Core
+        │
+        ▼
+TWC Core merges anonymous_id data to customer
+(anonymous wishlist → customer wishlist)
+        │
+        ▼
+Next widget request with customer_id
+gets merged data automatically
+```
+
+The widget just needs to pass the new `customer_id` once the user logs in.
 
 ---
 
