@@ -788,53 +788,220 @@ class TWCCoreClient:
 
 ### Wishlist Actions from Widgets
 
-When a user clicks "Add to Wishlist" in a widget:
+All widget operations go through the Widget API (not directly to TWC Core). This provides centralized tracking, logging, and rate limiting.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Widget JS                                                      │
+│  └── All calls go to Widget API                                 │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Widget API (this service)                                      │
+│  ├── Logs all operations to ClickHouse                          │
+│  ├── Tracks impressions, clicks, wishlist adds                  │
+│  ├── Rate limiting                                              │
+│  └── Calls TWC Core for mutations                               │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  TWC Core REST APIs                                             │
+│  └── Customer/wishlist data (DynamoDB)                          │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### Widget API Endpoints for Wishlist
+
+```
+POST /v1/widgets/wishlist/add
+  - Adds item to wishlist (handles anonymous flow)
+  - Logs the action to ClickHouse
+  - Calls TWC Core to perform the mutation
+
+POST /v1/widgets/wishlist/remove
+  - Removes item from wishlist
+  - Logs the action
+  - Calls TWC Core
+
+POST /v1/widgets/identity/merge
+  - Called when user logs in
+  - Merges anonymous wishlist to customer
+  - Calls TWC Core merge-anonymous endpoint
+```
+
+#### Add to Wishlist Flow
 
 ```javascript
 // In Web Component
-async addToWishlist(productId) {
-  // Call TWC Core API directly (or via widget API proxy)
-  const response = await fetch(`${this.config.coreApiBase}/wishlists/items`, {
+async addToWishlist(productId, requestId, rank) {
+  const response = await fetch(`${this.config.widgetApiBase}/v1/widgets/wishlist/add`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${this.config.publicKey}`,
     },
     body: JSON.stringify({
       tenant_id: this.config.tenantId,
-      customer_id: this.config.customerId,  // null if anonymous
-      anonymous_id: this.getAnonymousId(),
+      customer_id: this.config.customerId,      // null if not logged in
+      session_id: this.config.shopifySessionId, // for anonymous
       product_id: productId,
+      // Tracking context
+      request_id: requestId,      // from widget render
+      widget_id: this.widgetId,
+      rank: rank,                 // position in widget
     }),
   });
 
   if (response.ok) {
-    this.trackWishlistAdd(productId);
     // Update UI to show wishlisted state
+    this.markAsWishlisted(productId);
   }
 }
 ```
 
+#### Widget API Implementation
+
+```python
+@router.post("/v1/widgets/wishlist/add")
+async def add_to_wishlist(request: WishlistAddRequest):
+    """
+    Add item to wishlist via widget.
+
+    Handles:
+    1. Anonymous users (creates anonymous wishlist if needed)
+    2. Logged-in users (adds to their wishlist)
+    3. Tracking (logs to ClickHouse)
+    """
+    # 1. Log the wishlist add event (regardless of success)
+    await tracking_service.log_event(
+        tenant_id=request.tenant_id,
+        event_type="wishlist_add_attempt",
+        customer_id=request.customer_id,
+        session_id=request.session_id,
+        product_id=request.product_id,
+        request_id=request.request_id,
+        widget_id=request.widget_id,
+        rank=request.rank,
+    )
+
+    # 2. Determine if anonymous or logged in
+    if request.customer_id:
+        # Logged in user - add to their wishlist
+        wishlist = await twc_core.get_wishlist(request.tenant_id, request.customer_id)
+        if not wishlist:
+            return {"success": False, "error": "no_wishlist"}
+
+        success = await twc_core.add_to_wishlist(
+            request.tenant_id, wishlist.wishlist_id, request.product_id
+        )
+    else:
+        # Anonymous user - get or create anonymous wishlist
+        anon_info = await twc_core.get_anonymous_wishlist(
+            request.tenant_id, request.session_id
+        )
+
+        if not anon_info:
+            # Create anonymous wishlist
+            anon_info = await twc_core.create_anonymous_wishlist(
+                request.tenant_id, request.session_id
+            )
+
+        success = await twc_core.add_to_wishlist(
+            request.tenant_id, anon_info.wishlist_id, request.product_id
+        )
+
+    # 3. Log success/failure
+    await tracking_service.log_event(
+        tenant_id=request.tenant_id,
+        event_type="wishlist_add_result",
+        customer_id=request.customer_id,
+        session_id=request.session_id,
+        product_id=request.product_id,
+        success=success,
+    )
+
+    return {"success": success}
+```
+
 ### Anonymous to Customer Merge
 
-Identity merge on login is handled by TWC Core, not this service:
+When user logs in, the Shopify theme (or app) calls the Widget API to merge:
 
-```
-User logs in on Shopify
-        │
-        ▼
-Shopify sends customer data to TWC Core
-        │
-        ▼
-TWC Core merges anonymous_id data to customer
-(anonymous wishlist → customer wishlist)
-        │
-        ▼
-Next widget request with customer_id
-gets merged data automatically
+```javascript
+// Called when Shopify login completes
+async function onCustomerLogin(customerId, shopifyCustomerRef, email) {
+  const sessionId = getShopifySessionId();
+
+  // Check if there's an anonymous wishlist to merge
+  const response = await fetch(`${widgetApiBase}/v1/widgets/identity/merge`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      tenant_id: tenantId,
+      session_id: sessionId,
+      customer_id: customerId,
+      shopify_customer_ref: shopifyCustomerRef,
+      email: email,
+    }),
+  });
+
+  if (response.ok) {
+    // Refresh any widgets on page with new customer context
+    document.querySelectorAll('twc-recommendations').forEach(w => {
+      w.setAttribute('customer-id', customerId);
+      w.refresh();
+    });
+  }
+}
 ```
 
-The widget just needs to pass the new `customer_id` once the user logs in.
+#### Widget API Merge Implementation
+
+```python
+@router.post("/v1/widgets/identity/merge")
+async def merge_anonymous_wishlist(request: MergeRequest):
+    """
+    Merge anonymous wishlist to customer on login.
+
+    Called by Shopify theme when user logs in.
+    """
+    # 1. Check if anonymous wishlist exists for this session
+    anon_info = await twc_core.get_anonymous_wishlist(
+        request.tenant_id, request.session_id
+    )
+
+    if not anon_info:
+        # No anonymous wishlist to merge
+        return {"merged": False, "reason": "no_anonymous_wishlist"}
+
+    # 2. Call TWC Core to merge
+    result = await twc_core.merge_anonymous_wishlist(
+        tenant_id=request.tenant_id,
+        session_id=request.session_id,
+        guest_wishlist_id=anon_info.wishlist_id,
+        email=request.email,
+        shopify_customer_ref=request.shopify_customer_ref,
+        target_wishlist_ref=request.wishlist_ref,
+        wishlist_name=request.wishlist_name,
+    )
+
+    # 3. Log the merge event
+    await tracking_service.log_event(
+        tenant_id=request.tenant_id,
+        event_type="identity_merge",
+        customer_id=result.customer_id,
+        session_id=request.session_id,
+        items_merged=result.items_merged,
+    )
+
+    return {
+        "merged": True,
+        "customer_id": result.customer_id,
+        "wishlist_id": result.wishlist_id,
+        "items_merged": result.items_merged,
+    }
+```
 
 ---
 
