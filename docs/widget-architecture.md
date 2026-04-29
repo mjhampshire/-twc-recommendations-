@@ -108,6 +108,171 @@ This document defines the architecture for embedding TWC recommendations into Sh
 
 ---
 
+## TWC Core Integration
+
+The Widget API calls TWC Core REST APIs for customer and wishlist data. All mutations (wishlist add/remove, identity merge) go through TWC Core.
+
+### Service URLs
+
+| Environment | Base URL |
+|-------------|----------|
+| Production (AU) | `https://api.au-aws.thewishlist.io/` |
+
+| Service | Path | Purpose |
+|---------|------|---------|
+| Wishlist | `services/wssservice/api/wishlist` | Wishlist CRUD, items, anonymous |
+| Customer | `services/customerservice/api/v2/customers` | Customer profiles |
+
+### Authentication
+
+TWC Core uses OAuth2 client credentials flow:
+
+```
+POST https://auth.au-aws.thewishlist.io/auth/realms/twcMain/protocol/openid-connect/token
+Content-Type: application/x-www-form-urlencoded
+
+client_id=twc-api-client
+client_secret={tenant_secret}
+grant_type=client_credentials
+```
+
+Response:
+```json
+{
+  "access_token": "eyJhbG...",
+  "expires_in": 300,
+  "token_type": "Bearer"
+}
+```
+
+**Security Notes:**
+- `client_secret` is per-tenant and stored securely in Widget API config
+- Tokens are cached and refreshed before expiry
+- Browser JS uses Shopify proxy (never sees secrets)
+
+### Anonymous Wishlist Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/wishlists/anonymous?onlineSessionID={id}` | GET | Get anonymous wishlist by session |
+| `/wishlists/anonymous?onlineSessionID={id}` | POST | Create anonymous wishlist |
+| `/wishlists/merge` | POST | Merge anonymous to customer wishlist |
+
+#### GET Anonymous Wishlist
+
+```http
+GET /services/wssservice/api/wishlist/wishlists/anonymous?onlineSessionID=abc123
+Authorization: Bearer {access_token}
+```
+
+Response (if exists):
+```json
+{
+  "customerId": "abc123@anonymousTWCuser.twc",
+  "wishlistId": "wl_anon_001",
+  "items": [...]
+}
+```
+
+Response (if not exists): `404`
+
+#### POST Create Anonymous Wishlist
+
+```http
+POST /services/wssservice/api/wishlist/wishlists/anonymous?onlineSessionID=abc123
+Authorization: Bearer {access_token}
+```
+
+Response:
+```json
+{
+  "customerId": "abc123@anonymousTWCuser.twc",
+  "wishlistId": "wl_anon_002"
+}
+```
+
+**What this creates:**
+- Customer: `{sessionId}@anonymousTWCuser.twc` with `anonymousUser=true`
+- Wishlist: Single wishlist with `anonymous=true` flag
+- Excluded from campaigns/notifications and ClickHouse reports
+
+#### POST Merge Anonymous Wishlist
+
+```http
+POST /services/wssservice/api/wishlist/wishlists/merge
+Authorization: Bearer {access_token}
+Content-Type: application/json
+
+{
+  "onlineSessionID": "session_abc",
+  "anonymousWishlistId": "wl_anon_001",
+  "customerEmail": "user@example.com",
+  "customerRef": "shopify_cust_001",
+  "wishlistRef": "my_wishlist",
+  "wishlistName": "My Saved Items"
+}
+```
+
+**Merge Logic:**
+- If `maxWishlists=1` for tenant: adds items to existing wishlist (or creates one)
+- If `maxWishlists>1`: adds to specified `wishlistRef` (or creates new)
+- Error if `maxWishlists` exceeded
+
+### Data Flow
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  BROWSER                                                        │
+│                                                                 │
+│  Shopify Store                                                  │
+│  ├── Logged in: customerId available from Shopify              │
+│  └── Anonymous: onlineSessionID from Shopify session           │
+│                                                                 │
+│  Widget JS                                                      │
+│  └── Calls Widget API (via Shopify proxy for auth)             │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  WIDGET API (this service)                                      │
+│                                                                 │
+│  1. Receives request with identity (customerId or sessionId)   │
+│  2. Authenticates with TWC Core (OAuth2)                        │
+│  3. Fetches customer/wishlist data from Core                    │
+│  4. Runs recommendation algorithms (ClickHouse data)            │
+│  5. Logs tracking events to ClickHouse                          │
+│  6. Proxies mutations to TWC Core                               │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+            │                               │
+            ▼                               ▼
+┌───────────────────┐           ┌───────────────────┐
+│  ClickHouse       │           │  TWC Core         │
+│                   │           │                   │
+│  • Product data   │           │  OAuth2 Auth      │
+│  • Behavior data  │           │  ↓                │
+│  • Tracking       │           │  Wishlist Service │
+│  • Analytics      │           │  Customer Service │
+│                   │           │  (DynamoDB)       │
+└───────────────────┘           └───────────────────┘
+```
+
+### Tenant Configuration
+
+Each tenant requires:
+
+| Config | Source | Example |
+|--------|--------|---------|
+| `tenant_id` | TWC Core | `viktoria-woods` |
+| `client_secret` | TWC Core (secure) | `abc123...` |
+| `max_wishlists` | TWC Core tenant config | `1` or `5` |
+| `shopify_domain` | Shopify | `viktoria-woods.myshopify.com` |
+
+Stored in Widget API config (environment variables or secrets manager).
+
+---
+
 ## Embedding Approach
 
 ### Shopify: Theme App Extensions
@@ -158,7 +323,7 @@ Request recommendations for a widget placement.
 
   "identity": {
     "customer_id": "CUST001",
-    "anonymous_id": "anon_abc123",
+    "online_session_id": "shopify_session_abc123",
     "shopify_customer_id": "gid://shopify/Customer/123456789"
   },
 
@@ -177,6 +342,12 @@ Request recommendations for a widget placement.
     "include_reasons": true
   }
 }
+```
+
+**Identity fields:**
+- `customer_id`: TWC customer ID (if logged in and known)
+- `online_session_id`: Shopify session ID (always available, used for anonymous)
+- `shopify_customer_id`: Shopify's customer GID (used to lookup TWC customer)
 ```
 
 #### Response
@@ -651,22 +822,235 @@ The widget receives identity from the embed and passes it to TWC Core APIs.
 │                     TWC PLATFORM                                │
 │                                                                 │
 │  Widget API (this service)                                      │
-│  ├── Receives customer_id + anonymous_id                        │
-│  ├── Calls TWC Core REST APIs for customer data                │
+│  ├── Receives customer_id + online_session_id                  │
+│  ├── Authenticates with TWC Core (OAuth2)                       │
+│  ├── Calls TWC Core REST APIs for customer/wishlist data       │
+│  ├── Logs all events to ClickHouse                              │
 │  └── Returns recommendations                                    │
 │                                                                 │
-│  TWC Core REST APIs (existing)                                  │
-│  ├── GET /customers/{id} → Customer profile from DynamoDB      │
-│  ├── GET /wishlists/{customer_id} → Wishlist items             │
-│  ├── POST /wishlists/{customer_id}/items → Add to wishlist     │
-│  ├── POST /identity/merge → Merge anonymous to customer        │
-│  └── etc.                                                       │
+│  TWC Core REST APIs                                             │
+│  Base: https://api.au-aws.thewishlist.io/                       │
+│  ├── Customer: services/customerservice/api/v2/customers       │
+│  ├── Wishlist: services/wssservice/api/wishlist                │
+│  │   ├── GET  /wishlists/anonymous?onlineSessionID=...         │
+│  │   ├── POST /wishlists/anonymous?onlineSessionID=...         │
+│  │   ├── POST /wishlists/merge                                  │
+│  │   └── POST /wishlists/{id}/items                             │
 │                                                                 │
 │  Storage                                                        │
-│  ├── DynamoDB (customers, wishlists, preferences)              │
-│  └── ClickHouse (analytics, behavior, recommendations)          │
+│  ├── DynamoDB (customers, wishlists - via TWC Core)            │
+│  └── ClickHouse (analytics, tracking, recommendations)          │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
+```
+
+### TWC Core Client
+
+```python
+class TWCCoreClient:
+    """
+    Client for TWC Core REST APIs with OAuth2 authentication.
+
+    Handles token caching and automatic refresh.
+    """
+
+    AUTH_URL = "https://auth.au-aws.thewishlist.io/auth/realms/twcMain/protocol/openid-connect/token"
+    BASE_URL = "https://api.au-aws.thewishlist.io"
+
+    WISHLIST_PATH = "services/wssservice/api/wishlist"
+    CUSTOMER_PATH = "services/customerservice/api/v2/customers"
+
+    def __init__(self, client_secret: str):
+        self.client_secret = client_secret
+        self._access_token: Optional[str] = None
+        self._token_expires_at: Optional[datetime] = None
+
+    async def _get_token(self) -> str:
+        """Get OAuth2 access token (cached until near expiry)."""
+        if self._access_token and datetime.now() < self._token_expires_at:
+            return self._access_token
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                self.AUTH_URL,
+                data={
+                    "client_id": "twc-api-client",
+                    "client_secret": self.client_secret,
+                    "grant_type": "client_credentials",
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            self._access_token = data["access_token"]
+            expires_in = data.get("expires_in", 300)
+            # Refresh 30 seconds before actual expiry
+            self._token_expires_at = datetime.now() + timedelta(seconds=expires_in - 30)
+
+            return self._access_token
+
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        params: Optional[dict] = None,
+        json: Optional[dict] = None,
+    ) -> Optional[dict]:
+        """Make authenticated request to TWC Core."""
+        token = await self._get_token()
+        url = f"{self.BASE_URL}/{path}"
+
+        async with httpx.AsyncClient() as client:
+            response = await client.request(
+                method,
+                url,
+                params=params,
+                json=json,
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=10.0,
+            )
+
+            if response.status_code == 404:
+                return None
+            response.raise_for_status()
+            return response.json() if response.content else {}
+
+    # -------------------------------------------------------------------------
+    # Customer endpoints
+    # -------------------------------------------------------------------------
+
+    async def get_customer(self, customer_id: str) -> Optional[dict]:
+        """
+        GET /services/customerservice/api/v2/customers/{customerId}
+
+        Fetch customer profile by TWC customer ID.
+        """
+        return await self._request("GET", f"{self.CUSTOMER_PATH}/{customer_id}")
+
+    # -------------------------------------------------------------------------
+    # Wishlist endpoints
+    # -------------------------------------------------------------------------
+
+    async def get_wishlist(self, wishlist_id: str) -> Optional[dict]:
+        """
+        GET /services/wssservice/api/wishlist/wishlists/{wishlistId}
+
+        Fetch wishlist by ID.
+        """
+        return await self._request("GET", f"{self.WISHLIST_PATH}/wishlists/{wishlist_id}")
+
+    async def get_customer_wishlists(self, customer_id: str) -> Optional[list]:
+        """
+        GET /services/wssservice/api/wishlist/wishlists?customerId={customerId}
+
+        Fetch all wishlists for a customer.
+        """
+        return await self._request(
+            "GET",
+            f"{self.WISHLIST_PATH}/wishlists",
+            params={"customerId": customer_id},
+        )
+
+    async def add_to_wishlist(
+        self, wishlist_id: str, product_id: str, variant_id: Optional[str] = None
+    ) -> dict:
+        """
+        POST /services/wssservice/api/wishlist/wishlists/{wishlistId}/items
+
+        Add item to wishlist.
+        """
+        payload = {"productId": product_id}
+        if variant_id:
+            payload["variantId"] = variant_id
+
+        return await self._request(
+            "POST",
+            f"{self.WISHLIST_PATH}/wishlists/{wishlist_id}/items",
+            json=payload,
+        )
+
+    async def remove_from_wishlist(self, wishlist_id: str, item_id: str) -> dict:
+        """
+        DELETE /services/wssservice/api/wishlist/wishlists/{wishlistId}/items/{itemId}
+
+        Remove item from wishlist.
+        """
+        return await self._request(
+            "DELETE",
+            f"{self.WISHLIST_PATH}/wishlists/{wishlist_id}/items/{item_id}",
+        )
+
+    # -------------------------------------------------------------------------
+    # Anonymous wishlist endpoints
+    # -------------------------------------------------------------------------
+
+    async def get_anonymous_wishlist(self, online_session_id: str) -> Optional[dict]:
+        """
+        GET /services/wssservice/api/wishlist/wishlists/anonymous?onlineSessionID={id}
+
+        Get anonymous wishlist by Shopify session ID.
+        Returns None if no anonymous wishlist exists.
+        """
+        return await self._request(
+            "GET",
+            f"{self.WISHLIST_PATH}/wishlists/anonymous",
+            params={"onlineSessionID": online_session_id},
+        )
+
+    async def create_anonymous_wishlist(self, online_session_id: str) -> dict:
+        """
+        POST /services/wssservice/api/wishlist/wishlists/anonymous?onlineSessionID={id}
+
+        Create anonymous wishlist for session.
+
+        Creates:
+        - Customer: {sessionId}@anonymousTWCuser.twc (anonymousUser=true)
+        - Wishlist: single wishlist with anonymous=true
+
+        Returns: {"customerId": "...", "wishlistId": "..."}
+        """
+        return await self._request(
+            "POST",
+            f"{self.WISHLIST_PATH}/wishlists/anonymous",
+            params={"onlineSessionID": online_session_id},
+        )
+
+    async def merge_anonymous_wishlist(
+        self,
+        online_session_id: str,
+        anonymous_wishlist_id: str,
+        customer_email: str,
+        customer_ref: Optional[str] = None,
+        wishlist_ref: Optional[str] = None,
+        wishlist_name: Optional[str] = None,
+    ) -> dict:
+        """
+        POST /services/wssservice/api/wishlist/wishlists/merge
+
+        Merge anonymous wishlist into customer wishlist.
+
+        Merge logic:
+        - If maxWishlists=1: adds items to existing wishlist (or creates one)
+        - If maxWishlists>1: adds to specified wishlistRef (or creates new)
+        - Error if maxWishlists exceeded
+        """
+        payload = {
+            "onlineSessionID": online_session_id,
+            "anonymousWishlistId": anonymous_wishlist_id,
+            "customerEmail": customer_email,
+        }
+        if customer_ref:
+            payload["customerRef"] = customer_ref
+        if wishlist_ref:
+            payload["wishlistRef"] = wishlist_ref
+        if wishlist_name:
+            payload["wishlistName"] = wishlist_name
+
+        return await self._request(
+            "POST",
+            f"{self.WISHLIST_PATH}/wishlists/merge",
+            json=payload,
+        )
 ```
 
 ### Widget Identity Flow
@@ -685,9 +1069,8 @@ class WidgetIdentityResolver:
 
     async def resolve(
         self,
-        tenant_id: str,
         customer_id: Optional[str],
-        anonymous_id: Optional[str],
+        online_session_id: Optional[str],
         shopify_customer_id: Optional[str],
     ) -> ResolvedIdentity:
         """
@@ -695,95 +1078,43 @@ class WidgetIdentityResolver:
 
         Priority:
         1. customer_id (TWC internal) → fetch from Core API
-        2. shopify_customer_id → lookup via Core API
-        3. anonymous_id only → limited recommendations (trending, etc.)
+        2. shopify_customer_id → lookup via Core API (TODO: needs endpoint)
+        3. online_session_id only → check for anonymous wishlist
         """
         if customer_id:
-            # Fetch full customer profile from TWC Core
-            customer = await self.twc_core.get_customer(tenant_id, customer_id)
+            # Logged in user - fetch full customer profile
+            customer = await self.twc_core.get_customer(customer_id)
+            wishlists = await self.twc_core.get_customer_wishlists(customer_id)
+
             return ResolvedIdentity(
                 customer_id=customer_id,
                 customer=customer,
-                anonymous_id=anonymous_id,
+                wishlists=wishlists,
+                online_session_id=online_session_id,
                 is_anonymous=False,
             )
 
-        if shopify_customer_id:
-            # Lookup TWC customer by Shopify ID via Core API
-            customer = await self.twc_core.get_customer_by_shopify_id(
-                tenant_id, shopify_customer_id
-            )
-            if customer:
-                return ResolvedIdentity(
-                    customer_id=customer.customer_id,
-                    customer=customer,
-                    anonymous_id=anonymous_id,
-                    is_anonymous=False,
-                )
+        if online_session_id:
+            # Anonymous user - check for anonymous wishlist
+            anon_wishlist = await self.twc_core.get_anonymous_wishlist(online_session_id)
 
-        # Anonymous visitor - can still get trending, contextual recommendations
+            return ResolvedIdentity(
+                customer_id=None,
+                customer=None,
+                wishlists=[anon_wishlist] if anon_wishlist else [],
+                online_session_id=online_session_id,
+                is_anonymous=True,
+                anonymous_wishlist_id=anon_wishlist.get("wishlistId") if anon_wishlist else None,
+            )
+
+        # No identity at all - can only show trending/popular
         return ResolvedIdentity(
             customer_id=None,
             customer=None,
-            anonymous_id=anonymous_id,
+            wishlists=[],
+            online_session_id=None,
             is_anonymous=True,
         )
-
-
-class TWCCoreClient:
-    """Client for TWC Core REST APIs."""
-
-    def __init__(self, base_url: str, api_key: str):
-        self.base_url = base_url
-        self.api_key = api_key
-
-    async def get_customer(
-        self, tenant_id: str, customer_id: str
-    ) -> Optional[Customer]:
-        """Fetch customer profile from TWC Core."""
-        response = await self._get(f"/customers/{tenant_id}/{customer_id}")
-        if response:
-            return Customer(**response)
-        return None
-
-    async def get_customer_by_shopify_id(
-        self, tenant_id: str, shopify_customer_id: str
-    ) -> Optional[Customer]:
-        """Lookup customer by Shopify customer ID."""
-        response = await self._get(
-            f"/customers/{tenant_id}/by-shopify/{shopify_customer_id}"
-        )
-        if response:
-            return Customer(**response)
-        return None
-
-    async def add_to_wishlist(
-        self, tenant_id: str, customer_id: str, product_id: str
-    ) -> bool:
-        """Add item to wishlist via TWC Core API."""
-        return await self._post(
-            f"/wishlists/{tenant_id}/{customer_id}/items",
-            {"product_id": product_id}
-        )
-
-    async def _get(self, path: str) -> Optional[dict]:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{self.base_url}{path}",
-                headers={"Authorization": f"Bearer {self.api_key}"}
-            )
-            if response.status_code == 200:
-                return response.json()
-            return None
-
-    async def _post(self, path: str, data: dict) -> bool:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{self.base_url}{path}",
-                json=data,
-                headers={"Authorization": f"Bearer {self.api_key}"}
-            )
-            return response.status_code in (200, 201)
 ```
 
 ### Wishlist Actions from Widgets
