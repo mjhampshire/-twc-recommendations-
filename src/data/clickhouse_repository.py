@@ -443,7 +443,9 @@ class ClickHouseProductRepository:
                     price,
                     imageUrl,
                     url,
-                    inStock
+                    inStock,
+                    productDescription,
+                    tags
                 FROM TWCVARIANT FINAL
                 WHERE tenantId = {tenant_id:String}
                   AND variantRef = {product_id:String}
@@ -518,7 +520,9 @@ class ClickHouseProductRepository:
                     price,
                     imageUrl,
                     url,
-                    inStock
+                    inStock,
+                    productDescription,
+                    tags
                 FROM TWCVARIANT FINAL
                 WHERE {' AND '.join(where_clauses)}
                 ORDER BY updatedAt DESC
@@ -592,7 +596,7 @@ class ClickHouseProductRepository:
         (
             product_ref, variant_ref, product_name, variant_name,
             brand, category, sub_category, collection, color, size, size_type,
-            price, image_url, url, in_stock
+            price, image_url, url, in_stock, product_description, tags
         ) = row
 
         # Map inStock (UInt8) to stock_status string
@@ -603,21 +607,36 @@ class ClickHouseProductRepository:
         elif in_stock == 0:
             stock_status = "out_of_stock"
 
+        # Parse collection field (comma-separated list)
+        collections = []
+        if collection:
+            collections = [c.strip() for c in collection.split(",") if c.strip()]
+
+        # Parse tags field (comma-separated list or already a list)
+        tag_list = []
+        if tags:
+            if isinstance(tags, str):
+                tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+            elif isinstance(tags, list):
+                tag_list = [str(t).strip() for t in tags if t]
+
         return Product(
             product_id=variant_ref,
             product_ref=product_ref,
             retailer_id=tenant_id,
             name=product_name or "",
+            description=product_description or None,
             price=float(price or 0),
             image_url=image_url,
             product_url=url,
             attributes=ProductAttributes(
                 category=category,
                 subcategory=sub_category,
-                collection=collection,
+                collections=collections,
                 brand=brand,
                 color=color,
                 colors=[color] if color else [],
+                tags=tag_list,
             ),
             sizing=ProductSizing(
                 available_sizes=[size] if size else [],

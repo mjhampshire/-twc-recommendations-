@@ -24,6 +24,7 @@ class CustomerPreferences(BaseModel):
     fabrics: list[PreferenceItem] = []      # e.g., Silk, Cotton, Linen
     styles: list[PreferenceItem] = []       # e.g., Classic, Bohemian, Minimalist
     brands: list[PreferenceItem] = []       # e.g., Zimmermann, Scanlan Theodore
+    occasions: list[PreferenceItem] = []    # e.g., Work, Evening, Casual, Wedding
     size_top: Optional[str] = None
     size_bottom: Optional[str] = None
     size_dress: Optional[str] = None
@@ -41,6 +42,7 @@ class CustomerDislikes(BaseModel):
     fabrics: list[PreferenceItem] = []      # Fabrics to avoid
     styles: list[PreferenceItem] = []       # Styles to avoid
     brands: list[PreferenceItem] = []       # Brands to avoid
+    occasions: list[PreferenceItem] = []    # Occasions to avoid
 
 
 class PurchaseHistory(BaseModel):

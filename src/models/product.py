@@ -8,7 +8,7 @@ class ProductAttributes(BaseModel):
     """Product attributes used for matching."""
     category: Optional[str] = None       # e.g., "Dresses"
     subcategory: Optional[str] = None    # e.g., "Midi Dresses"
-    collection: Optional[str] = None     # e.g., "Summer 2025"
+    collections: list[str] = []          # e.g., ["Summer 2025", "New Arrivals"] - comma-separated in DB
     color: Optional[str] = None          # Primary color
     colors: list[str] = []               # All colors
     fabric: Optional[str] = None         # Primary fabric
@@ -17,6 +17,7 @@ class ProductAttributes(BaseModel):
     brand: Optional[str] = None
     season: Optional[str] = None         # e.g., "SS24", "AW24"
     occasions: list[str] = []            # e.g., ["Work", "Evening", "Casual"]
+    tags: list[str] = []                 # Product tags from Shopify/PIM
 
 
 class ProductSizing(BaseModel):

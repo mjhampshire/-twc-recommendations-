@@ -285,6 +285,62 @@ def score_product(
     else:
         scores['new_arrival_boost'] = 0.0
 
+    # --- Tags Matching ---
+    # Tags can contain style, occasion, and category-related keywords
+    # Match against customer preferences and purchase patterns
+
+    tag_score = 0.0
+    tag_matches = []
+
+    if attrs.tags:
+        tags_lower = {t.lower() for t in attrs.tags}
+
+        # Check if tags match style preferences
+        for style_pref in prefs.styles:
+            if style_pref.value.lower() in tags_lower:
+                tag_score += 0.3
+                tag_matches.append(style_pref.value)
+
+        # Check if tags match occasion preferences
+        for occasion_pref in prefs.occasions:
+            if occasion_pref.value.lower() in tags_lower:
+                tag_score += 0.2
+                tag_matches.append(occasion_pref.value)
+
+        # Check if tags match category preferences (partial match)
+        for cat_pref in prefs.categories:
+            if cat_pref.value.lower() in tags_lower or any(cat_pref.value.lower() in t for t in tags_lower):
+                tag_score += 0.2
+                tag_matches.append(cat_pref.value)
+
+        # Check against purchase history categories
+        for hist_cat in history.top_categories:
+            if hist_cat.lower() in tags_lower or any(hist_cat.lower() in t for t in tags_lower):
+                tag_score += 0.1
+
+    scores['tag_match'] = min(tag_score, 1.0) * weights.preference_style  # Reuse style weight
+    if tag_matches:
+        reasons.append(f"Tagged as: {', '.join(tag_matches[:2])}")
+
+    # --- Collection Matching ---
+    # Boost products in collections that match browsing/purchase patterns
+
+    collection_score = 0.0
+    if attrs.collections:
+        collections_lower = {c.lower() for c in attrs.collections}
+
+        # Check against browsing patterns (viewed categories often correlate with collections)
+        for viewed_cat in browsing.viewed_categories:
+            if any(viewed_cat.lower() in coll for coll in collections_lower):
+                collection_score += 0.2
+
+        # Check against purchase history categories
+        for purchased_cat in history.top_categories:
+            if any(purchased_cat.lower() in coll for coll in collections_lower):
+                collection_score += 0.15
+
+    scores['collection_match'] = min(collection_score, 1.0) * 0.1  # Low weight for collection
+
     # --- Size Match ---
 
     size_score = 0.0
