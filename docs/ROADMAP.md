@@ -7,25 +7,37 @@ This roadmap consolidates all planned enhancements for the TWC recommendations p
 1. **Quick wins** - Immediate improvements with minimal effort
 2. **Shopify integration** - Customer-requested, revenue-driving
 3. **Product intelligence** - Better data = better recommendations
-4. **Advanced features** - Purchase readiness, cross-retailer intelligence
+4. **Advanced ML features** - As defined in the ML Roadmap
 
 **Timeline:** 3-6 months
+
+**Related Documents:**
+- [ML Roadmap](./ml-roadmap.md) - Detailed ML/AI progression from rules to continuous learning
 
 ---
 
 ## Current State (Completed)
 
+### Delivery Infrastructure
+
 | Component | Status | Notes |
 |-----------|--------|-------|
 | Core recommendation engine | ✅ Done | Rule-based scoring with configurable weights |
-| A/B testing framework | ✅ Done | Variant assignment, statistical analysis, auto-promotion |
-| Multi-armed bandit | ✅ Done | Thompson sampling for weight optimization |
-| Recommendation logging | ✅ Done | ClickHouse tables for impressions, outcomes |
 | Widget API endpoints | ✅ Done | Render, track, wishlist operations |
 | TWC Core client | ✅ Done | OAuth2 authentication, wishlist CRUD |
 | Widget tracking tables | ✅ Done | Impressions, events, daily metrics |
 | Tags & collections support | ✅ Done | Scoring against customer preferences |
 | Product description field | ✅ Done | Fetched and available (not yet used in scoring) |
+
+### ML Roadmap Progress
+
+| ML Phase | Status | Components |
+|----------|--------|------------|
+| Phase 1: Rule-Based Scoring | ✅ Complete | Feature matching, configurable weights, dislike filtering, diversification |
+| Phase 2: Outcome Tracking | ✅ Complete | `TWCRECOMMENDATION_LOG`, `TWCRECOMMENDATION_OUTCOME`, outcome API endpoints |
+| Phase 3: A/B Testing | ✅ Complete | `ABTestManager`, `ABTestAnalyzer`, multi-armed bandit, statistical analysis |
+| Phase 4: ML Training Pipeline | Not started | Feature store, model training, inference service |
+| Phase 5: Continuous Learning & NBA | Not started | Online learning, Next Best Action, personalized outreach |
 
 ---
 
@@ -153,6 +165,8 @@ Score =
 
 Better product data = better recommendations. Now that tags and descriptions are flowing, enhance how we use them.
 
+*This phase lays groundwork for ML Roadmap Phase 4 (Feature Store, Model Training).*
+
 ### 3.1 Tag Processing
 
 | Task | Effort | Description |
@@ -180,20 +194,56 @@ Better product data = better recommendations. Now that tags and descriptions are
 
 **Note:** CLIP is higher effort but high value for visual discovery.
 
----
+### 3.4 Feature Store Foundation (ML Prep)
 
-## Phase 4: Advanced Features (Weeks 13-20)
-
-### 4.1 Purchase Readiness v2 (ML-based)
+Prepare infrastructure for ML Roadmap Phase 4.
 
 | Task | Effort | Description |
 |------|--------|-------------|
-| Feature engineering | 1 week | Build training dataset from outcomes |
-| Model training | 1 week | Logistic regression or XGBoost |
-| A/B test vs RFM | 2 weeks | Measure lift over rule-based |
-| Production deployment | 3 days | Real-time scoring |
+| Customer feature aggregation | 3 days | RFM features, purchase patterns, browsing signals |
+| Product feature aggregation | 2 days | Popularity scores, conversion rates, embedding vectors |
+| Feature serving layer | 3 days | Real-time feature lookup for inference |
 
-### 4.2 Collaborative Filtering & Cross-Retailer Intelligence
+**Note:** This enables transition from rule-based to ML-based scoring.
+
+---
+
+## Phase 4: ML & Advanced Features (Weeks 13-20+)
+
+*This phase implements ML Roadmap Phases 4-5.*
+
+### 4.1 ML Model Training Pipeline (ML Roadmap Phase 4)
+
+Replace rule-based scoring with learned models that optimize for conversions.
+
+| Task | Effort | Description |
+|------|--------|-------------|
+| Training data export | 3 days | Export labeled data from ClickHouse outcomes |
+| Feature engineering | 1 week | Customer, product, and interaction features |
+| Model training | 1 week | XGBoost/LightGBM for ranking |
+| Model versioning | 2 days | MLflow for experiment tracking |
+| Inference service | 1 week | Real-time or batch scoring |
+| A/B test ML vs rules | 2 weeks | Target: ML beats rules by >5% CVR |
+
+**Success criteria:** ML model deployed and outperforming rule-based system.
+
+### 4.2 Next Best Action & Purchase Readiness (ML Roadmap Phase 5)
+
+| Task | Effort | Description |
+|------|--------|-------------|
+| Purchase readiness v2 (ML) | 2 weeks | ML-based propensity scoring |
+| Action recommendation API | 1 week | Recommend staff actions per customer |
+| Action outcome tracking | 3 days | Track which actions drive results |
+| Personalized outreach triggers | 2 weeks | "Back in stock", "Similar to wishlist" alerts |
+
+**NBA Action Catalog** (from ML Roadmap):
+- Send styling suggestion (inactive high-value customer)
+- Notify wishlist back in stock
+- Invite to VIP event
+- Offer personal shopping (abandoned cart >$500)
+- Send size recommendation (multiple returns)
+
+### 4.3 Collaborative Filtering & Cross-Retailer Intelligence
 
 These features share the same foundation: learning patterns across customers and retailers.
 
@@ -213,7 +263,7 @@ These features share the same foundation: learning patterns across customers and
 | Size prediction API | 2 days | GET /size-prediction/{customer} |
 | Brand affinity mapping | 1 week | Cross-retailer brand preferences |
 
-**Start with:** Shoes sizes only (most standardized), top 5 retailers with overlap.
+**Start with:** Shoe sizes only (most standardized), top 5 retailers with overlap.
 
 #### User-Based CF (If Needed)
 
@@ -222,18 +272,27 @@ These features share the same foundation: learning patterns across customers and
 | User similarity | 1 week | For new customer bootstrap |
 | Cold start recs | 3 days | Bootstrap from similar customers |
 
-**Note:** Only pursue collaborative filtering if explicit preferences show diminishing returns. Cross-retailer intelligence is a unique competitive advantage worth investing in once core features are solid.
+### 4.4 Continuous Learning (ML Roadmap Phase 5)
+
+| Task | Effort | Description |
+|------|--------|-------------|
+| Online model updates | 2 weeks | Real-time learning from interactions |
+| Bandit exploration | 1 week | Contextual bandits for new products |
+| Cold-start handling | 1 week | Bootstrap new products/customers |
+| Seasonal adaptation | 1 week | Detect and adapt to seasonal shifts |
+
+**Note:** Continuous learning is ongoing investment, not a one-time delivery.
 
 ---
 
 ## Phase Summary
 
-| Phase | Weeks | Focus | Key Deliverables |
-|-------|-------|-------|------------------|
-| **1** | 1-4 | Quick Wins + Shopify MVP | Model improvements, Shopify App Blocks |
-| **2** | 5-8 | Polish + Expand | Shopify enhancements, Web Components, Purchase readiness v1 |
-| **3** | 9-12 | Product Intelligence | Tag processing, description analysis, CLIP |
-| **4** | 13-20 | Advanced | ML readiness, CF + Cross-retailer intelligence |
+| Phase | Weeks | Focus | Key Deliverables | ML Roadmap |
+|-------|-------|-------|------------------|------------|
+| **1** | 1-4 | Quick Wins + Shopify MVP | Model improvements, Shopify App Blocks | - |
+| **2** | 5-8 | Polish + Expand | Shopify enhancements, Web Components, Purchase readiness v1 (RFM) | - |
+| **3** | 9-12 | Product Intelligence | Tag processing, CLIP, Feature Store foundation | Prep for Phase 4 |
+| **4** | 13-20+ | ML & Advanced | ML training pipeline, NBA, CF, Cross-retailer | Phases 4-5 |
 
 ---
 
@@ -288,6 +347,22 @@ These features share the same foundation: learning patterns across customers and
 2. **This week:** Set up Shopify Theme App Extension scaffold
 3. **This month:** Ship Shopify MVP with "For You" block
 4. **Ongoing:** Track metrics, iterate based on data
+
+---
+
+## ML Roadmap Alignment
+
+This roadmap integrates with the [ML Roadmap](./ml-roadmap.md) as follows:
+
+| ML Roadmap Phase | Status | This Roadmap |
+|------------------|--------|--------------|
+| Phase 1: Rule-Based Scoring | ✅ Complete | Current state |
+| Phase 2: Outcome Tracking | ✅ Complete | Current state |
+| Phase 3: A/B Testing | ✅ Complete | Current state |
+| Phase 4: ML Training Pipeline | Planned | Phase 3 (Feature Store prep) → Phase 4 (full implementation) |
+| Phase 5: Continuous Learning & NBA | Planned | Phase 4 |
+
+**Key insight:** ML Roadmap Phases 1-3 are complete. This roadmap focuses on delivery (Shopify, widgets) while Phase 3-4 build toward ML Roadmap Phases 4-5.
 
 ---
 
