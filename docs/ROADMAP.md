@@ -37,11 +37,11 @@ These improvements can be made immediately with existing data.
 
 | Enhancement | Effort | Impact | Description |
 |-------------|--------|--------|-------------|
+| **Out-of-stock filtering** | 1 day | High | Hard filter out-of-stock products (requires inStock data) |
+| **Wishlist deduplication** | 1 day | Medium | Don't recommend products already on customer's wishlist |
 | **Trending boost** | 1 day | High | Boost recently wishlisted/viewed products in recommendations |
 | **Recency weighting** | 1 day | Medium | Weight recent purchases/views higher than older ones |
 | **Price range matching** | 2 days | Medium | Match product price to customer's typical spend range |
-| **Out-of-stock filtering** | 1 day | High | Hard filter out-of-stock products (requires inStock data) |
-| **Wishlist deduplication** | 1 day | Medium | Don't recommend products already on customer's wishlist |
 
 **Implementation priority:** Out-of-stock filtering → Wishlist dedup → Trending boost → Recency → Price range
 
@@ -86,29 +86,9 @@ Shopify Store
 - [ ] Clicks/adds tracked for attribution
 - [ ] Works with Online Store 2.0 themes
 
-### 1.3 Purchase Readiness Scoring (RFM-based)
-
-**Why now:** Quick win, enables prioritized outreach, uses existing data.
-
-| Task | Effort | Description |
-|------|--------|-------------|
-| Schema for readiness signals | 1 day | ClickHouse table for computed signals |
-| Batch job to compute scores | 2 days | Daily aggregation of recency/frequency/intent |
-| API endpoint | 1 day | GET /customers/ready-to-buy |
-| Dashboard integration | 2 days | Surface in TWC admin |
-
-**Formula (v1):**
-```
-Score =
-    recency_score × 0.35 +      # Days since last visit (decay)
-    frequency_score × 0.25 +    # Visit frequency trend
-    intent_score × 0.25 +       # Cart adds, wishlist adds
-    cycle_score × 0.15          # Within typical purchase window
-```
-
 ---
 
-## Phase 2: Shopify Polish & Web Components (Weeks 5-8)
+## Phase 2: Shopify Polish, Web Components & Purchase Readiness (Weeks 5-8)
 
 ### 2.1 Shopify Enhancements
 
@@ -144,6 +124,28 @@ For retailers not on Shopify (custom sites, other platforms).
     layout="carousel">
 </twc-recommendations>
 ```
+
+### 2.3 Purchase Readiness Scoring (RFM-based)
+
+Enables prioritized customer outreach based on likelihood to purchase.
+
+| Task | Effort | Description |
+|------|--------|-------------|
+| Schema for readiness signals | 1 day | ClickHouse table for computed signals |
+| Batch job to compute scores | 2 days | Daily aggregation of recency/frequency/intent |
+| API endpoint | 1 day | GET /customers/ready-to-buy |
+| Dashboard/FE integration | TBD | Surface in TWC admin (design needed) |
+
+**Formula (v1):**
+```
+Score =
+    recency_score × 0.35 +      # Days since last visit (decay)
+    frequency_score × 0.25 +    # Visit frequency trend
+    intent_score × 0.25 +       # Cart adds, wishlist adds
+    cycle_score × 0.15          # Within typical purchase window
+```
+
+**Note:** Backend ready by end of Phase 2; FE delivery approach to be determined.
 
 ---
 
@@ -228,8 +230,8 @@ These features share the same foundation: learning patterns across customers and
 
 | Phase | Weeks | Focus | Key Deliverables |
 |-------|-------|-------|------------------|
-| **1** | 1-4 | Quick Wins + Shopify | Model improvements, Shopify App Blocks, Purchase readiness v1 |
-| **2** | 5-8 | Polish + Expand | Shopify enhancements, Web Components |
+| **1** | 1-4 | Quick Wins + Shopify MVP | Model improvements, Shopify App Blocks |
+| **2** | 5-8 | Polish + Expand | Shopify enhancements, Web Components, Purchase readiness v1 |
 | **3** | 9-12 | Product Intelligence | Tag processing, description analysis, CLIP |
 | **4** | 13-20 | Advanced | ML readiness, CF + Cross-retailer intelligence |
 
@@ -245,8 +247,8 @@ These features share the same foundation: learning patterns across customers and
 ### This Month (Shopify MVP)
 - [ ] Theme App Extension scaffold
 - [ ] "For You" App Block
+- [ ] "Trending" App Block
 - [ ] Shopify Proxy endpoint
-- [ ] Purchase readiness v1
 
 ### This Quarter (Full Widget Suite)
 - [ ] All Shopify blocks (Trending, Similar, Complete the Look)
