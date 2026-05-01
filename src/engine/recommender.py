@@ -65,6 +65,7 @@ class RecommendationEngine:
         customer: Customer,
         weights: RecommendationWeights,
         exclude_product_ids: Optional[set[str]] = None,
+        exclude_wishlist: bool = True,
     ) -> list[Product]:
         """Apply pre-scoring filters to reduce candidate set."""
         filtered = []
@@ -72,6 +73,10 @@ class RecommendationEngine:
 
         # Add recently purchased items to exclusion list
         exclude_ids.update(customer.purchase_history.recent_product_ids)
+
+        # Add wishlist items to exclusion list (don't recommend what they already want)
+        if exclude_wishlist:
+            exclude_ids.update(customer.wishlist.active_wishlist_items)
 
         for product in products:
             # Skip excluded products

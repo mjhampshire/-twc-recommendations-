@@ -285,6 +285,18 @@ def score_product(
     else:
         scores['new_arrival_boost'] = 0.0
 
+    # --- Trending Boost ---
+    # Boost products with high recent wishlist/view activity
+    # trending_score is 0-1, where 1 = highly trending
+
+    trending_score = product.metrics.trending_score
+    if trending_score > 0:
+        scores['trending_boost'] = trending_score * weights.trending_boost
+        if trending_score > 0.5 and "Trending now" not in reasons:
+            reasons.append("Trending now")
+    else:
+        scores['trending_boost'] = 0.0
+
     # --- Tags Matching ---
     # Tags can contain style, occasion, and category-related keywords
     # Match against customer preferences and purchase patterns
