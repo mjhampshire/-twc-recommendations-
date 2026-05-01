@@ -39,10 +39,14 @@ class RecommendationWeights(BaseModel):
     new_arrival_boost: float = 0.04
 
     # Availability
-    in_stock_requirement: bool = True  # Hard filter out-of-stock products
+    # NOTE: Stock is checked via REST API, not ClickHouse. Set to True once stock client is integrated.
+    in_stock_requirement: bool = False  # Hard filter out-of-stock products (requires stock API)
 
     # Trending boost (recently wishlisted/viewed products)
     trending_boost: float = 0.06
+
+    # Recency weighting (boost products matching recent customer activity)
+    recency_boost: float = 0.08  # Boost for matching recent views/purchases
 
     # Size availability
     size_match_boost: float = 0.02
@@ -84,7 +88,8 @@ class RecommendationWeights(BaseModel):
             self.product_popularity +
             self.new_arrival_boost +
             self.size_match_boost +
-            self.trending_boost
+            self.trending_boost +
+            self.recency_boost
         )
 
 
@@ -109,6 +114,7 @@ PREFERENCE_HEAVY_WEIGHTS = RecommendationWeights(
     new_arrival_boost=0.03,
     size_match_boost=0.02,
     trending_boost=0.04,
+    recency_boost=0.04,  # Lower for preference-heavy (stated prefs matter more)
 )
 
 BEHAVIOR_HEAVY_WEIGHTS = RecommendationWeights(
@@ -129,6 +135,7 @@ BEHAVIOR_HEAVY_WEIGHTS = RecommendationWeights(
     new_arrival_boost=0.02,
     size_match_boost=0.01,
     trending_boost=0.06,
+    recency_boost=0.10,  # Higher for behavior-heavy (recent behavior matters most)
 )
 
 NEW_CUSTOMER_WEIGHTS = RecommendationWeights(
@@ -145,8 +152,9 @@ NEW_CUSTOMER_WEIGHTS = RecommendationWeights(
     browsing_viewed_category=0.08,  # Browsing data more useful for new customers
     browsing_viewed_brand=0.06,
     browsing_cart_similarity=0.10,
-    product_popularity=0.12,
+    product_popularity=0.10,
     new_arrival_boost=0.06,
     size_match_boost=0.03,
     trending_boost=0.08,  # Trending more important for new customers
+    recency_boost=0.10,  # Recent browsing is key signal for new customers
 )

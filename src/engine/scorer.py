@@ -297,6 +297,40 @@ def score_product(
     else:
         scores['trending_boost'] = 0.0
 
+    # --- Recency Boost ---
+    # Boost products that match customer's recent activity (views, purchases)
+    # Recent activity is a stronger signal than historical patterns
+
+    recency_score = 0.0
+    recency_matches = []
+
+    # Check if product matches recently viewed products' attributes
+    if browsing.viewed_product_ids:
+        # Product is similar to recently viewed (category/brand match)
+        if attrs.category and attrs.category.lower() in {c.lower() for c in browsing.viewed_categories[:3]}:
+            recency_score += 0.4
+            recency_matches.append("recently browsed category")
+        if attrs.brand and attrs.brand.lower() in {b.lower() for b in browsing.viewed_brands[:3]}:
+            recency_score += 0.3
+
+    # Check if product matches recently purchased items' attributes
+    if history.recent_product_ids:
+        # Boost if matches top recent purchase patterns (first 3 = most recent)
+        if attrs.category and attrs.category.lower() in {c.lower() for c in history.top_categories[:2]}:
+            recency_score += 0.3
+            if "recently browsed category" not in recency_matches:
+                recency_matches.append("recently purchased category")
+
+    # Apply activity recency multiplier (more recent activity = stronger signal)
+    # If customer was active in last 7 days, full boost; decays after
+    if browsing.sessions_last_30_days > 0:
+        activity_multiplier = min(1.0, browsing.sessions_last_30_days / 5)  # 5+ sessions = full boost
+        recency_score *= activity_multiplier
+
+    scores['recency_boost'] = min(recency_score, 1.0) * weights.recency_boost
+    if recency_matches and recency_score > 0.3:
+        reasons.append(f"Matches {recency_matches[0]}")
+
     # --- Tags Matching ---
     # Tags can contain style, occasion, and category-related keywords
     # Match against customer preferences and purchase patterns
