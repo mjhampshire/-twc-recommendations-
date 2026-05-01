@@ -41,6 +41,7 @@ class Product(BaseModel):
     product_ref: Optional[str] = None  # Base product ID - same across all variants
     retailer_id: str
     name: str
+    handle: Optional[str] = None  # Shopify product handle (e.g., "blue-dress")
     description: Optional[str] = None
     price: float
     original_price: Optional[float] = None  # If on sale

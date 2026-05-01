@@ -74,6 +74,7 @@ class WidgetProduct(BaseModel):
     """Simplified product for widget display."""
     product_id: str
     variant_id: Optional[str] = None
+    handle: Optional[str] = None  # Shopify product handle for /products/{handle}.js lookup
     title: str
     price: float
     compare_at_price: Optional[float] = None
@@ -748,11 +749,13 @@ def _to_widget_products(
     return [
         WidgetProduct(
             product_id=r.product.product_id,
+            handle=r.product.handle,
             title=r.product.name,
+            url=r.product.product_url,
             price=r.product.price,
-            compare_at_price=r.product.compare_at_price,
-            image_url=r.product.image_urls[0] if r.product.image_urls else None,
-            in_stock=r.product.in_stock,
+            compare_at_price=r.product.original_price,
+            image_url=r.product.image_url,
+            in_stock=r.product.stock_status != "out_of_stock" if r.product.stock_status else True,
             score=r.score,
             rank=i + 1,
             reason=default_reason,
