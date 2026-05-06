@@ -222,14 +222,16 @@ class ClickHouseCustomerRepository:
         )
 
     def _fetch_wishlist(self, client, tenant_id: str, customer_id: str, lookup_field: str) -> WishlistSummary:
-        """Fetch wishlist summary."""
+        """Fetch wishlist summary with product colors."""
         query = f"""
             SELECT
                 wi.productRef,
                 wi.category,
-                wi.brandId
+                wi.brandId,
+                v.color
             FROM TWCWISHLIST w FINAL
             JOIN WISHLISTITEM wi FINAL ON w.wishlistId = wi.wishlistId AND w.tenantId = wi.tenantId
+            LEFT JOIN TWCVARIANT v FINAL ON wi.variantRef = v.variantRef AND wi.tenantId = v.tenantId
             WHERE w.tenantId = {{tenant_id:String}}
               AND w.{lookup_field} = {{customer_id:String}}
               AND w.deleted = '0'
@@ -248,41 +250,46 @@ class ClickHouseCustomerRepository:
         product_ids = []
         category_counts = {}
         brand_counts = {}
+        color_counts = {}
 
         for row in result.result_rows:
-            product_ref, category, brand_id = row
+            product_ref, category, brand_id, color = row
             if product_ref:
                 product_ids.append(product_ref)
             if category:
                 category_counts[category] = category_counts.get(category, 0) + 1
             if brand_id:
                 brand_counts[brand_id] = brand_counts.get(brand_id, 0) + 1
+            if color:
+                color_counts[color] = color_counts.get(color, 0) + 1
 
         return WishlistSummary(
             total_wishlisted=len(product_ids),
             active_wishlist_items=product_ids[:20],  # Limit to 20
             wishlist_categories=sorted(category_counts.keys(), key=lambda x: category_counts[x], reverse=True)[:5],
             wishlist_brands=sorted(brand_counts.keys(), key=lambda x: brand_counts[x], reverse=True)[:5],
-            wishlist_colors=[],  # Would need product join for colors
+            wishlist_colors=sorted(color_counts.keys(), key=lambda x: color_counts[x], reverse=True)[:5],
         )
 
     def _fetch_browsing(self, client, tenant_id: str, customer_id: str, lookup_field: str) -> BrowsingBehavior:
-        """Fetch browsing behavior from clickstream."""
+        """Fetch browsing behavior from clickstream with product colors."""
         # Last 30 days of browsing
         cutoff_date = datetime.now() - timedelta(days=30)
 
         query = f"""
             SELECT
-                productRef,
-                productType,
-                brand,
-                eventType,
-                timeStamp
-            FROM TWCCLICKSTREAM
-            WHERE tenantId = {{tenant_id:String}}
-              AND {lookup_field} = {{customer_id:String}}
-              AND timeStamp >= {{cutoff:DateTime}}
-            ORDER BY timeStamp DESC
+                c.productRef,
+                c.productType,
+                c.brand,
+                c.eventType,
+                c.timeStamp,
+                v.color
+            FROM TWCCLICKSTREAM c
+            LEFT JOIN TWCVARIANT v FINAL ON c.variantRef = v.variantRef AND c.tenantId = v.tenantId
+            WHERE c.tenantId = {{tenant_id:String}}
+              AND c.{lookup_field} = {{customer_id:String}}
+              AND c.timeStamp >= {{cutoff:DateTime}}
+            ORDER BY c.timeStamp DESC
             LIMIT 500
         """
 
@@ -301,12 +308,15 @@ class ClickHouseCustomerRepository:
         viewed_products = []
         category_counts = {}
         brand_counts = {}
+        color_counts = {}
         cart_products = []
+        cart_categories = {}
+        cart_brands = {}
         last_browse = None
         sessions = set()
 
         for row in result.result_rows:
-            product_ref, product_type, brand, event_type, timestamp = row
+            product_ref, product_type, brand, event_type, timestamp, color = row
 
             if last_browse is None:
                 last_browse = timestamp
@@ -321,37 +331,49 @@ class ClickHouseCustomerRepository:
                 category_counts[product_type] = category_counts.get(product_type, 0) + 1
             if brand:
                 brand_counts[brand] = brand_counts.get(brand, 0) + 1
+            if color:
+                color_counts[color] = color_counts.get(color, 0) + 1
 
             # Track cart events
             if event_type and 'cart' in event_type.lower() and product_ref:
                 if product_ref not in cart_products:
                     cart_products.append(product_ref)
+                if product_type:
+                    cart_categories[product_type] = cart_categories.get(product_type, 0) + 1
+                if brand:
+                    cart_brands[brand] = cart_brands.get(brand, 0) + 1
 
         return BrowsingBehavior(
             viewed_product_ids=viewed_products[:20],
             view_count_last_30_days=result.row_count,
             viewed_categories=sorted(category_counts.keys(), key=lambda x: category_counts[x], reverse=True)[:5],
             viewed_brands=sorted(brand_counts.keys(), key=lambda x: brand_counts[x], reverse=True)[:5],
-            viewed_colors=[],  # Would need product join
+            viewed_colors=sorted(color_counts.keys(), key=lambda x: color_counts[x], reverse=True)[:5],
             cart_product_ids=cart_products[:10],
             abandoned_cart_product_ids=[],  # Would need purchase cross-reference
-            cart_categories=[],
-            cart_brands=[],
+            cart_categories=sorted(cart_categories.keys(), key=lambda x: cart_categories[x], reverse=True)[:5],
+            cart_brands=sorted(cart_brands.keys(), key=lambda x: cart_brands[x], reverse=True)[:5],
             last_browse_date=last_browse,
             sessions_last_30_days=len(sessions),
         )
 
     def _parse_preferences_json(self, preferences_json: str) -> tuple[CustomerPreferences, CustomerDislikes]:
         """
-        Parse the retailer-specific preferences JSON into our domain models.
+        Parse retailer-specific preferences JSON into our domain models.
 
-        Handles the camillaandmarc-au format:
-        {
-            "dresses": [{"id": "size_8", "value": "8", "source": "staff"}],
-            "categories": [{"id": "evening", "value": "evening", "source": "staff"}],
-            "colours": [{"id": "black", "value": "black", "source": "staff"}],
-            ...
-        }
+        Uses pattern matching to handle different retailer schemas:
+        - Single-brand: {"categories": [...], "colours": [...], "dresses": [sizes]}
+        - Multi-brand womens: {"womens_brands": [...], "womens_categories": [...]}
+        - Multi-brand mens: {"mens_brands": [...], "mens_clothing": [...]}
+
+        Keys are matched using substring patterns:
+        - *brand* → brands
+        - *color*, *colour* → colors
+        - *categor*, *clothing*, *footwear*, *accessor*, *lifestyle* → categories
+        - *fit*, *style*, *cut* → styles
+        - *occasion* → occasions
+        - *fabric* → fabrics
+        - Garment keys (dresses, tops, etc.) → sizes
 
         Dislikes are items with "dislike": true flag.
         """
@@ -363,48 +385,97 @@ class ClickHouseCustomerRepository:
         preferences = CustomerPreferences()
         dislikes = CustomerDislikes()
 
-        # Category preferences
-        for item in data.get("categories", []):
-            pref_item = self._to_preference_item(item)
-            if item.get("dislike"):
-                dislikes.categories.append(pref_item)
-            else:
-                preferences.categories.append(pref_item)
-
-        # Color preferences
-        for item in data.get("colours", []):
-            pref_item = self._to_preference_item(item)
-            if item.get("dislike"):
-                dislikes.colors.append(pref_item)
-            else:
-                preferences.colors.append(pref_item)
-
-        # Size preferences by category
-        # Map category keys to our size fields
-        size_mapping = {
+        # Size key mappings - these keys contain size values, not preference values
+        size_key_mapping = {
             "dresses": "size_dress",
+            "dress": "size_dress",
             "tops": "size_top",
+            "top": "size_top",
             "bottoms": "size_bottom",
-            "blazers": "size_top",  # Use top size for blazers
+            "bottom": "size_bottom",
+            "blazers": "size_top",
+            "blazer": "size_top",
             "outerwear": "size_top",
             "knitwear": "size_top",
+            "knit": "size_top",
             "denim": "size_bottom",
+            "jeans": "size_bottom",
+            "pants": "size_bottom",
+            "skirts": "size_bottom",
+            "skirt": "size_bottom",
+            "shorts": "size_bottom",
             "footwear": "size_shoe",
+            "shoes": "size_shoe",
+            "shoe": "size_shoe",
+            "sweaters": "size_top",
+            "shirts": "size_top",
+            "jackets": "size_top",
+            "coats": "size_top",
         }
 
-        for category_key, size_field in size_mapping.items():
-            items = data.get(category_key, [])
-            if items:
-                # Take first size value
+        for key, items in data.items():
+            if not isinstance(items, list) or not items:
+                continue
+
+            key_lower = key.lower()
+
+            # Check if this is a size key first
+            size_field = self._get_size_field_for_key(key_lower, size_key_mapping)
+            if size_field:
+                # Extract size value
                 first_item = items[0]
                 size_value = first_item.get("value", "")
                 if size_value and not getattr(preferences, size_field, None):
                     setattr(preferences, size_field, size_value)
+                continue
 
-        # Note: brands, fabrics, styles would be extracted similarly if present
-        # Currently not in the camillaandmarc schema
+            # Determine which preference field this key maps to
+            target_field = self._get_preference_field_for_key(key_lower)
+            if not target_field:
+                continue
+
+            # Add items to the appropriate preference/dislike list
+            for item in items:
+                pref_item = self._to_preference_item(item)
+                if item.get("dislike"):
+                    getattr(dislikes, target_field).append(pref_item)
+                else:
+                    getattr(preferences, target_field).append(pref_item)
 
         return preferences, dislikes
+
+    def _get_size_field_for_key(self, key: str, size_key_mapping: dict[str, str]) -> Optional[str]:
+        """Check if a key represents a size field and return the corresponding field name."""
+        # Direct match first
+        if key in size_key_mapping:
+            return size_key_mapping[key]
+
+        # Check for size-related suffixes (e.g., "womens_dresses", "mens_tops")
+        for size_key, field in size_key_mapping.items():
+            if key.endswith(f"_{size_key}") or key.endswith(f"_{size_key}s"):
+                return field
+
+        return None
+
+    def _get_preference_field_for_key(self, key: str) -> Optional[str]:
+        """Map a preference key to its target field using pattern matching."""
+        # Pattern matching rules - order matters for overlapping patterns
+        patterns = [
+            (["brand"], "brands"),
+            (["color", "colour"], "colors"),
+            (["fabric", "material"], "fabrics"),
+            (["occasion"], "occasions"),
+            (["fit", "style", "cut"], "styles"),
+            # Category patterns - checked last as they're broader
+            (["categor", "clothing", "footwear", "accessor", "lifestyle", "jewellery", "jewelry"], "categories"),
+        ]
+
+        for substrings, field in patterns:
+            for substr in substrings:
+                if substr in key:
+                    return field
+
+        return None
 
     def _to_preference_item(self, item: dict) -> PreferenceItem:
         """Convert a preference dict to PreferenceItem."""
