@@ -1,7 +1,7 @@
 # TWC Recommendations - Project Status
 
-**Last Updated:** February 2025
-**Status:** MVP Complete - Ready for Data Integration
+**Last Updated:** May 2025
+**Status:** Data Integration Complete - Ready for Production Testing
 
 ---
 
@@ -20,23 +20,56 @@ A product recommendation engine for The Wishlist Company that provides personali
 - Auto-detects new customers and adjusts strategy
 - Diversity algorithm (avoids recommending 4 similar items)
 - Human-readable explanations ("Matches preferred brand: Zimmermann")
-- **Dislikes filtering** - Hard filter for products matching customer dislikes (brand, color, style, etc.)
-- **Preference source tracking** - Each preference records whether it was entered by staff or customer, with configurable score multipliers
+- **Dislikes filtering** - Hard filter for products matching customer dislikes
+- **Preference source tracking** - Staff vs customer-entered preferences with configurable multipliers
+- **Recency weighting** - Recent purchases/views weighted higher
 
 ### 2. Data Signals Supported
 
-| Signal Type | Source | Examples |
-|-------------|--------|----------|
-| **Preferences** | Customer profile | Categories, colors, fabrics, styles, brands, sizes (with staff/customer source tracking) |
-| **Dislikes** | Customer profile | Categories, colors, fabrics, styles, brands to avoid (hard filter) |
-| **Purchase History** | Transaction data | Top categories, brands, colors purchased |
-| **Wishlist** | Wishlist activity | Wishlisted categories, brands, colors |
-| **Browsing Behavior** | Website events (DynamoDB) | Viewed categories, brands; cart items |
-| **Product Performance** | Aggregated metrics | Popularity, trending score |
+| Signal Type | ClickHouse Table | Data Retrieved |
+|-------------|------------------|----------------|
+| **Preferences** | TWCPREFERENCES | Categories, colors, brands, styles, sizes, occasions |
+| **Dislikes** | TWCPREFERENCES | Items marked with `dislike: true` |
+| **Purchase History** | TWCALLORDERS, ORDERLINE | Top categories/brands/colors, recent purchases |
+| **Wishlist** | TWCWISHLIST, WISHLISTITEM | Active items, categories, brands, colors |
+| **Browsing** | TWCCLICKSTREAM | Viewed products, categories, brands, colors, cart items |
+| **Products** | TWCVARIANT | Product catalog with attributes |
 
 ### 3. Sold-Out Alternatives
 - Finds similar in-stock products for sold-out wishlist items
 - Matches on: category, brand, style, color, fabric, price range
+
+---
+
+## Data Integration (Completed)
+
+### ClickHouse Tables Used
+
+| Table | Purpose |
+|-------|---------|
+| `TWCPREFERENCES` | Customer preferences JSON (retailer-specific schemas) |
+| `TWCVARIANT` | Product catalog with category, brand, color |
+| `TWCALLORDERS` | Order summary data |
+| `ORDERLINE` | Order line items |
+| `TWCWISHLIST` | Wishlist headers |
+| `WISHLISTITEM` | Wishlist items |
+| `TWCCLICKSTREAM` | Browsing events (views, cart adds) |
+
+### Preference Schema Handling
+
+The `_parse_preferences_json()` method uses pattern matching to handle different retailer schemas:
+
+| Key Pattern | Maps To |
+|-------------|---------|
+| `*brand*` | `preferences.brands` |
+| `*color*`, `*colour*` | `preferences.colors` |
+| `*categor*`, `*clothing*`, `*footwear*` | `preferences.categories` |
+| `*fit*`, `*style*`, `*cut*` | `preferences.styles` |
+| `*occasion*` | `preferences.occasions` |
+| `*fabric*`, `*material*` | `preferences.fabrics` |
+| Garment keys (dresses, tops, etc.) | Size fields |
+
+Supports single-brand retailers (e.g., `{"categories": [...]}`) and multi-brand retailers (e.g., `{"womens_brands": [...], "mens_clothing": [...]}`).
 
 ---
 
@@ -58,21 +91,24 @@ GET  /api/v1/health
 ```
 twc-recommendations/
 ├── src/
-│   ├── api/              # FastAPI endpoints
-│   │   ├── app.py
-│   │   └── routes.py
-│   ├── engine/           # Core recommendation logic
-│   │   ├── scorer.py     # Product scoring algorithm
-│   │   └── recommender.py
-│   ├── data/             # Data access layer
-│   │   └── repository.py # Currently mock data
-│   ├── models/           # Pydantic models
-│   │   ├── customer.py   # Customer, Preferences, History, Browsing
-│   │   └── product.py    # Product, Attributes, Metrics
+│   ├── api/
+│   │   ├── app.py              # FastAPI application
+│   │   └── routes.py           # API endpoints
+│   ├── engine/
+│   │   ├── scorer.py           # Product scoring algorithm
+│   │   └── recommender.py      # Recommendation orchestration
+│   ├── data/
+│   │   ├── clickhouse_repository.py  # ClickHouse queries (production)
+│   │   ├── repository.py             # Mock data (testing)
+│   │   └── stock_client.py           # Stock status client
+│   ├── models/
+│   │   ├── customer.py         # Customer, Preferences, History, Browsing
+│   │   └── product.py          # Product, Attributes, Metrics
 │   └── config/
-│       └── weights.py    # Configurable weight presets
+│       ├── weights.py          # Scoring weight presets
+│       └── clickhouse.py       # ClickHouse connection config
 ├── tests/
-│   └── test_recommender.py  # 18 tests, all passing
+│   └── test_recommender.py
 ├── requirements.txt
 └── README.md
 ```
@@ -84,23 +120,16 @@ twc-recommendations/
 - **Language:** Python 3.13
 - **Framework:** FastAPI
 - **Validation:** Pydantic v2
+- **Database:** ClickHouse Cloud
 - **Testing:** pytest
-
-**Production Dependencies (not yet integrated):**
-- AWS DynamoDB (customer profiles, browsing events)
-- ClickHouse Cloud (analytics, aggregations)
-- Shopify API (future: product catalog)
 
 ---
 
 ## What's Next (To-Do)
 
-### Data Integration
-- [ ] Connect `CustomerRepository` to DynamoDB for real customer profiles
-- [ ] Connect `ProductRepository` to product catalog (DynamoDB or Shopify)
-- [ ] Add ClickHouse queries for behavioral aggregations
-- [ ] Implement browsing event ingestion
-- [ ] Populate `inStock` field in TWCVARIANT (currently frontend handles stock filtering)
+### Stock Filtering
+- [ ] Implement stock status check via DynamoDB API or Shopify directly
+- [ ] Filter out-of-stock products from recommendations
 
 ### Additional Use Cases
 - [ ] **Complete the Look** - "You're trying on X, here's what pairs with it"
@@ -135,18 +164,9 @@ curl http://localhost:8000/api/v1/recommendations/retailer_luxe/cust_001
 
 ---
 
-## Git History
-
-```
-7437ef9 Add browsing behavior signals and sold-out alternatives
-eb35ad9 TWC Recommendations - Initial commit
-```
-
----
-
 ## Key Files to Review When Resuming
 
-1. **`src/config/weights.py`** - All the scoring weights (adjust these to tune recommendations)
-2. **`src/engine/scorer.py`** - The scoring algorithm
-3. **`src/data/repository.py`** - Where to add real database connections
-4. **`src/models/customer.py`** - Data structures for customer profile
+1. **`src/data/clickhouse_repository.py`** - All ClickHouse queries and preference parsing
+2. **`src/config/weights.py`** - Scoring weights (adjust to tune recommendations)
+3. **`src/engine/scorer.py`** - The scoring algorithm
+4. **`src/models/customer.py`** - Customer profile data structures
