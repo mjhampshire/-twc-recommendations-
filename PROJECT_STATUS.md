@@ -131,6 +131,10 @@ twc-recommendations/
 - [ ] Implement stock status check via DynamoDB API or Shopify directly
 - [ ] Filter out-of-stock products from recommendations
 
+### Scoring Enhancements
+- [ ] **Product description matching** - Use description field for keyword/semantic matching (field is fetched but not yet used in scoring)
+- [ ] **Fabric matching** - Add fabric preferences to scoring (model supports it, not yet implemented)
+
 ### Additional Use Cases
 - [ ] **Complete the Look** - "You're trying on X, here's what pairs with it"
 - [ ] **Real-time Fitting** - Incorporate "currently looking at" signal
