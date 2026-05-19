@@ -662,6 +662,18 @@ class ClickHouseProductRepository:
         finally:
             client.close()
 
+    def _extract_handle_from_url(self, url: Optional[str]) -> Optional[str]:
+        """Extract Shopify product handle from URL.
+
+        e.g., "/products/silk-midi-dress-navy" -> "silk-midi-dress-navy"
+             "https://example.com/products/blue-dress?variant=123" -> "blue-dress"
+        """
+        if not url:
+            return None
+        import re
+        match = re.search(r'/products/([^/?#]+)', url)
+        return match.group(1) if match else None
+
     def _row_to_product(self, tenant_id: str, row: tuple) -> Product:
         """Convert a database row to a Product model."""
         (
@@ -691,11 +703,15 @@ class ClickHouseProductRepository:
             elif isinstance(tags, list):
                 tag_list = [str(t).strip() for t in tags if t]
 
+        # Extract handle from URL for Shopify stock lookup
+        handle = self._extract_handle_from_url(url)
+
         return Product(
             product_id=variant_ref,
             product_ref=product_ref,
             retailer_id=tenant_id,
             name=product_name or "",
+            handle=handle,
             description=product_description or None,
             price=float(price or 0),
             image_url=image_url,
@@ -715,3 +731,133 @@ class ClickHouseProductRepository:
             ),
             stock_status=stock_status,
         )
+
+    def get_trending_products(
+        self,
+        tenant_id: str,
+        n: int = 10,
+        period: str = "7d",
+        category: Optional[str] = None,
+        collection: Optional[str] = None,
+    ) -> list[Product]:
+        """Fetch trending products based on engagement signals.
+
+        Ranks products by weighted engagement within the time window:
+        - Purchases (weight: 10)
+        - Add-to-cart events (weight: 5)
+        - Wishlist adds (weight: 3)
+        - Views (weight: 1)
+
+        Args:
+            tenant_id: The retailer/tenant ID
+            n: Number of products to return (max 20)
+            period: Time window - "24h", "7d", or "30d"
+            category: Optional category filter
+            collection: Optional collection filter
+        """
+        client = _get_client(self.config)
+
+        # Map period to days
+        period_days = {"24h": 1, "7d": 7, "30d": 30}.get(period, 7)
+        cutoff_date = datetime.now() - timedelta(days=period_days)
+
+        try:
+            # Build optional filters
+            filters = []
+            parameters = {
+                "tenant_id": tenant_id,
+                "cutoff": cutoff_date,
+                "limit": min(n, 20),
+            }
+
+            if category:
+                filters.append("AND p.category = {category:String}")
+                parameters["category"] = category
+
+            if collection:
+                filters.append("AND lower(p.collection) LIKE {collection_pattern:String}")
+                parameters["collection_pattern"] = f"%{collection.lower()}%"
+
+            filter_clause = " ".join(filters)
+
+            # Query engagement signals and join with product data
+            query = f"""
+                WITH engagement AS (
+                    -- Views from clickstream
+                    SELECT
+                        variantRef,
+                        countIf(eventType IN ('view', 'product_view', 'pdp_view')) as views,
+                        countIf(eventType IN ('add_to_cart', 'cart_add', 'addToCart')) as cart_adds
+                    FROM TWCCLICKSTREAM
+                    WHERE tenantId = {{tenant_id:String}}
+                      AND timeStamp >= {{cutoff:DateTime}}
+                    GROUP BY variantRef
+                ),
+                purchases AS (
+                    -- Purchases from order lines
+                    SELECT
+                        variantRef,
+                        count(*) as purchase_count
+                    FROM ORDERLINE FINAL
+                    WHERE tenantId = {{tenant_id:String}}
+                      AND orderLineDate >= {{cutoff:DateTime}}
+                      AND eventType != 'DELETE'
+                    GROUP BY variantRef
+                ),
+                wishlists AS (
+                    -- Wishlist adds
+                    SELECT
+                        variantRef,
+                        count(*) as wishlist_count
+                    FROM WISHLISTITEM FINAL
+                    WHERE tenantId = {{tenant_id:String}}
+                      AND createdAt >= {{cutoff:DateTime}}
+                      AND deleted = '0'
+                    GROUP BY variantRef
+                )
+                SELECT
+                    p.productRef,
+                    p.variantRef,
+                    p.productName,
+                    p.variantName,
+                    p.brand,
+                    p.category,
+                    p.subCategory,
+                    p.collection,
+                    p.color,
+                    p.size,
+                    p.sizeType,
+                    p.price,
+                    p.imageUrl,
+                    p.url,
+                    p.inStock,
+                    p.productDescription,
+                    p.tags,
+                    -- Trending score calculation
+                    (coalesce(pur.purchase_count, 0) * 10 +
+                     coalesce(e.cart_adds, 0) * 5 +
+                     coalesce(w.wishlist_count, 0) * 3 +
+                     coalesce(e.views, 0) * 1) as trending_score
+                FROM TWCVARIANT p FINAL
+                LEFT JOIN engagement e ON p.variantRef = e.variantRef
+                LEFT JOIN purchases pur ON p.variantRef = pur.variantRef
+                LEFT JOIN wishlists w ON p.variantRef = w.variantRef
+                WHERE p.tenantId = {{tenant_id:String}}
+                  AND p.deleted = 0
+                  {filter_clause}
+                ORDER BY trending_score DESC, p.updatedAt DESC
+                LIMIT {{limit:UInt32}}
+            """
+
+            result = client.query(query, parameters=parameters)
+
+            # Convert rows to products (exclude the trending_score column)
+            products = []
+            for row in result.result_rows:
+                # Row has 18 columns: 17 product fields + trending_score
+                product_row = row[:17]
+                products.append(self._row_to_product(tenant_id, product_row))
+
+            return products
+        finally:
+            client.close()

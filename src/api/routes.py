@@ -529,6 +529,47 @@ async def get_similar_products(
     return [p for _, p in similar[:n]]
 
 
+@router.get("/trending/{retailer_id}")
+async def get_trending_products(
+    retailer_id: str,
+    n: int = Query(default=10, ge=1, le=20),
+    period: str = Query(default="7d", description="Time window: 24h, 7d, or 30d"),
+    category: Optional[str] = Query(default=None, description="Filter to specific category"),
+    collection: Optional[str] = Query(default=None, description="Filter to specific collection"),
+) -> list[Product]:
+    """
+    Get trending/popular products for a retailer.
+
+    Ranks products by engagement signals within the time window:
+    - Purchases (weight: 10)
+    - Add-to-cart events (weight: 5)
+    - Wishlist adds (weight: 3)
+    - Views (weight: 1)
+
+    Use for "Trending Now" or "Popular Products" sections.
+    """
+    # Validate period
+    if period not in ("24h", "7d", "30d"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid period '{period}'. Must be: 24h, 7d, or 30d"
+        )
+
+    products = product_repo.get_trending_products(
+        tenant_id=retailer_id,
+        n=n,
+        period=period,
+        category=category,
+        collection=collection,
+    )
+
+    if not products:
+        # Fall back to most recent products if no engagement data
+        products = product_repo.get_products_for_retailer(retailer_id, limit=n)
+
+    return products
+
+
 @router.get("/alternatives/{retailer_id}/{product_id}")
 async def get_product_alternatives(
     retailer_id: str,
