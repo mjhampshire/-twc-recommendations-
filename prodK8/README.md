@@ -6,7 +6,6 @@
 # 1. Update values marked with "UPDATE" comments in:
 #    - configmap.yaml (ClickHouse host)
 #    - deployment.yaml (ECR image)
-#    - ingress.yaml (domain, certificate ARN)
 
 # 2. Apply in order
 kubectl apply -f namespace.yaml
@@ -15,7 +14,6 @@ kubectl apply -f external-secret.yaml   # or secret.yaml if not using External S
 kubectl apply -f serviceaccount.yaml
 kubectl apply -f deployment.yaml
 kubectl apply -f service.yaml
-kubectl apply -f ingress.yaml
 kubectl apply -f hpa.yaml
 kubectl apply -f pdb.yaml
 
@@ -23,6 +21,21 @@ kubectl apply -f pdb.yaml
 kubectl -n recommendations get pods
 kubectl -n recommendations logs -l app=twc-recommendations
 ```
+
+## Internal Access
+
+This service is internal-only (no public ingress). Other services in the cluster
+access it via Kubernetes DNS:
+
+```
+http://twc-recommendations.recommendations.svc.cluster.local/api/v1/recommendations/{retailer_id}/{customer_id}
+```
+
+Example endpoints:
+- `GET .../api/v1/recommendations/{retailer_id}/{customer_id}` - Personalized recommendations
+- `GET .../api/v1/similar/{retailer_id}/{product_id}` - Similar products
+- `GET .../api/v1/trending/{retailer_id}` - Trending products
+- `GET .../api/v1/health` - Health check
 
 ## Files
 
@@ -34,8 +47,7 @@ kubectl -n recommendations logs -l app=twc-recommendations
 | `secret.yaml.example` | Manual secret template (not recommended) |
 | `serviceaccount.yaml` | Service account for IRSA |
 | `deployment.yaml` | Main deployment with 3 replicas |
-| `service.yaml` | ClusterIP service |
-| `ingress.yaml` | ALB ingress for external access |
+| `service.yaml` | ClusterIP service (internal only) |
 | `hpa.yaml` | Horizontal Pod Autoscaler (3-10 pods) |
 | `pdb.yaml` | Pod Disruption Budget (min 2 available) |
 
@@ -45,8 +57,6 @@ Before deploying, update these placeholders:
 
 1. **configmap.yaml**: `CLICKHOUSE_HOST` - your ClickHouse hostname
 2. **deployment.yaml**: `image` - your ECR repository and tag
-3. **ingress.yaml**: `certificate-arn` - your ACM certificate
-4. **ingress.yaml**: `host` - your internal domain
 
 ## Full Documentation
 
