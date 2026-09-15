@@ -38,6 +38,8 @@ class TWCCoreClient:
 
     WISHLIST_PATH = "services/wssservice/api/wishlist"
     CUSTOMER_PATH = "services/customerservice/api/v2/customers"
+    # Storefront (guest) appointment endpoints — see AppointmentStorefrontResource in wsservice.
+    APPOINTMENT_PATH = "services/wssservice/api/appointments/storefront"
 
     def __init__(
         self,
@@ -45,6 +47,7 @@ class TWCCoreClient:
         base_url: Optional[str] = None,
         auth_url: Optional[str] = None,
         timeout: float = 10.0,
+        tenant_id: Optional[str] = None,
     ):
         """
         Initialize TWC Core client.
@@ -54,11 +57,15 @@ class TWCCoreClient:
             base_url: Override base URL (for testing)
             auth_url: Override auth URL (for testing)
             timeout: Request timeout in seconds
+            tenant_id: Tenant this client acts for. When set, appointment calls send it as the
+                X-TWC-Tenant header (wsservice resolves the tenant from that header). Existing
+                wishlist/customer calls are unchanged.
         """
         self.client_secret = client_secret
         self.base_url = base_url or self.BASE_URL
         self.auth_url = auth_url or self.AUTH_URL
         self.timeout = timeout
+        self.tenant_id = tenant_id
 
         self._access_token: Optional[str] = None
         self._token_expires_at: Optional[datetime] = None
@@ -121,6 +128,7 @@ class TWCCoreClient:
         path: str,
         params: Optional[dict] = None,
         json: Optional[dict] = None,
+        headers: Optional[dict] = None,
     ) -> Optional[dict]:
         """
         Make authenticated request to TWC Core.
@@ -130,6 +138,8 @@ class TWCCoreClient:
             path: API path (relative to base URL)
             params: Query parameters
             json: JSON body
+            headers: Extra request headers merged over the Authorization header (e.g. X-TWC-Tenant
+                for appointment calls). The Authorization header always wins.
 
         Returns:
             Response JSON or None if 404
@@ -140,6 +150,9 @@ class TWCCoreClient:
         token = await self._get_token()
         url = f"{self.base_url}/{path}"
 
+        req_headers = dict(headers or {})
+        req_headers["Authorization"] = f"Bearer {token}"
+
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.request(
@@ -147,7 +160,7 @@ class TWCCoreClient:
                     url,
                     params=params,
                     json=json,
-                    headers={"Authorization": f"Bearer {token}"},
+                    headers=req_headers,
                 )
 
                 # 404 is not an error - just means resource doesn't exist
@@ -410,4 +423,89 @@ class TWCCoreClient:
             "POST",
             f"{self.WISHLIST_PATH}/wishlists/merge",
             json=payload,
+        )
+
+    # -------------------------------------------------------------------------
+    # Storefront appointment endpoints (guest booking — ST-15)
+    #
+    # These proxy the public AppointmentStorefrontResource in wsservice. Each sends X-TWC-Tenant so
+    # wsservice resolves the right tenant (the shopper never holds a token; this client is the
+    # trusted caller, authenticated with the tenant's client-credentials secret).
+    # -------------------------------------------------------------------------
+
+    def _tenant_headers(self) -> dict:
+        """X-TWC-Tenant header for appointment calls (empty when no tenant is configured)."""
+        return {"X-TWC-Tenant": self.tenant_id} if self.tenant_id else {}
+
+    async def get_appointment_types(self) -> list:
+        """
+        Bookable appointment types for the tenant.
+
+        GET /services/wssservice/api/appointments/storefront/types
+        """
+        result = await self._request(
+            "GET", f"{self.APPOINTMENT_PATH}/types", headers=self._tenant_headers()
+        )
+        return result if isinstance(result, list) else []
+
+    async def get_appointment_locations(self) -> list:
+        """
+        Stores a shopper can book at (those with availability configured).
+
+        GET /services/wssservice/api/appointments/storefront/locations
+        """
+        result = await self._request(
+            "GET", f"{self.APPOINTMENT_PATH}/locations", headers=self._tenant_headers()
+        )
+        return result if isinstance(result, list) else []
+
+    async def get_appointment_slots(
+        self,
+        location_ref: str,
+        appointment_type_id: str,
+        from_date: str,
+        to_date: str,
+    ) -> list:
+        """
+        Valid start times for a store + type over a date range (store-local dates, yyyy-MM-dd).
+
+        GET /services/wssservice/api/appointments/storefront/slots
+        """
+        result = await self._request(
+            "GET",
+            f"{self.APPOINTMENT_PATH}/slots",
+            params={
+                "locationRef": location_ref,
+                "appointmentTypeId": appointment_type_id,
+                "from": from_date,
+                "to": to_date,
+            },
+            headers=self._tenant_headers(),
+        )
+        return result if isinstance(result, list) else []
+
+    async def create_appointment(self, payload: dict) -> dict:
+        """
+        Create a guest booking. The response carries the one-time accessPin to relay to the shopper.
+
+        POST /services/wssservice/api/appointments/storefront/book
+        """
+        return await self._request(
+            "POST",
+            f"{self.APPOINTMENT_PATH}/book",
+            json=payload,
+            headers=self._tenant_headers(),
+        )
+
+    async def access_appointment(self, booking_ref: str, access_pin: str) -> Optional[dict]:
+        """
+        Retrieve a guest booking by code + PIN (guest-safe projection). Returns None if not found.
+
+        POST /services/wssservice/api/appointments/storefront/access
+        """
+        return await self._request(
+            "POST",
+            f"{self.APPOINTMENT_PATH}/access",
+            json={"bookingRef": booking_ref, "accessPin": access_pin},
+            headers=self._tenant_headers(),
         )

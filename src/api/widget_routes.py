@@ -38,7 +38,7 @@ def get_twc_client(tenant_id: str) -> TWCCoreClient:
                 status_code=503,
                 detail=f"TWC Core not configured for tenant {tenant_id}"
             )
-        _twc_clients[tenant_id] = TWCCoreClient(client_secret=secret)
+        _twc_clients[tenant_id] = TWCCoreClient(client_secret=secret, tenant_id=tenant_id)
     return _twc_clients[tenant_id]
 
 

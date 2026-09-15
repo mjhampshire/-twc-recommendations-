@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .routes import router
 from .widget_routes import router as widget_router
+from .appointment_routes import router as appointment_router
 
 app = FastAPI(
     title="TWC Recommendations API",
@@ -23,6 +24,7 @@ app.add_middleware(
 # Include routes
 app.include_router(router)
 app.include_router(widget_router)
+app.include_router(appointment_router)
 
 
 @app.get("/")
